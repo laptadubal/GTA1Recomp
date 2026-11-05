@@ -2000,7 +2000,7 @@ void Game::updateMainMenu(float dt, InputManager& input, AudioManager& audio) {
 void Game::updateSettings(float dt, InputManager& input, AudioManager& audio,
                           bool fromPause) {
     (void)dt;
-    const int count = 8;
+    const int count = 9;
     if (input.pressed(GameAction::MenuUp)) {
         settingsIndex_ = (settingsIndex_ + count - 1) % count;
     }
@@ -2066,7 +2066,19 @@ void Game::updateSettings(float dt, InputManager& input, AudioManager& audio,
                 config_.audio.engineVolume + direction * 0.1f, 0.0f, 1.0f);
             audio.setEngineVolume(config_.audio.engineVolume);
             break;
-        case 7:
+        case 7: {
+            // Original authored lane tiles vs. clean procedural paint.
+            config_.cleanRoads = !config_.cleanRoads;
+            world_.setCleanRoads(config_.cleanRoads);
+            std::string rebuildError;
+            if (!world_.build(assets_, rebuildError)) {
+                setStatus("ROAD REBUILD FAILED: " + rebuildError);
+            }
+            setStatus(config_.cleanRoads ? "CLEAN ROADS ON"
+                                         : "ORIGINAL ROAD TILES");
+            break;
+        }
+        case 8:
             back();
             break;
         default:
@@ -2076,7 +2088,7 @@ void Game::updateSettings(float dt, InputManager& input, AudioManager& audio,
 
     const bool left = input.pressed(GameAction::MenuLeft);
     const bool right = input.pressed(GameAction::MenuRight);
-    if (settingsIndex_ != 7) {
+    if (settingsIndex_ != 8) {
         if (left) {
             apply(settingsIndex_, -1);
             audio.playUiClick();
@@ -2102,7 +2114,7 @@ void Game::updateSettings(float dt, InputManager& input, AudioManager& audio,
     }
     if (activate) {
         audio.playUiClick();
-        if (settingsIndex_ == 7) {
+        if (settingsIndex_ == 8) {
             back();
         } else {
             apply(settingsIndex_, 1);
@@ -5201,7 +5213,7 @@ void Game::renderSettings(Renderer& renderer, bool fromPause) {
     char resolution[32];
     std::snprintf(resolution, sizeof(resolution), "%d X %d",
                   config_.graphics.width, config_.graphics.height);
-    const std::string values[8] = {
+    const std::string values[9] = {
         resolution,
         config_.graphics.fullscreen ? "ON" : "OFF",
         std::to_string(config_.graphics.msaa),
@@ -5209,14 +5221,15 @@ void Game::renderSettings(Renderer& renderer, bool fromPause) {
         config_.audio.music ? "ON" : "OFF",
         percentText(config_.audio.musicVolume),
         percentText(config_.audio.engineVolume),
+        config_.cleanRoads ? "CLEAN" : "ORIGINAL",
         "",
     };
-    const char* labels[8] = {"RESOLUTION", "FULLSCREEN", "MSAA",       "FXAA",
-                             "MUSIC",      "MUSIC VOLUME", "ENGINE VOLUME",
-                             "BACK"};
-    const float firstY = 150.0f;
-    const float spacing = 38.0f;
-    for (int i = 0; i < 8; ++i) {
+    const char* labels[9] = {"RESOLUTION", "FULLSCREEN", "MSAA",
+                             "FXAA",       "MUSIC",      "MUSIC VOLUME",
+                             "ENGINE VOLUME", "ROAD STYLE", "BACK"};
+    const float firstY = 146.0f;
+    const float spacing = 34.0f;
+    for (int i = 0; i < 9; ++i) {
         const float y = firstY + i * spacing;
         const bool selected = settingsIndex_ == i;
         if (selected) {
@@ -5230,7 +5243,7 @@ void Game::renderSettings(Renderer& renderer, bool fromPause) {
         drawOriginalText(renderer, frame, labels[i], 166.0f, y, 0.55f,
                          selected ? 1.0f : 0.78f, selected ? 0.95f : 0.78f,
                          selected ? 0.55f : 0.6f, 1.0f, false);
-        if (i < 7) {
+        if (i < 8) {
             const std::string shown = "< " + values[i] + " >";
             const float valueScale = 0.46f * fs;
             const float valueWidth =
