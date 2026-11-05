@@ -102,19 +102,33 @@ Vec3 World::findSpawn(int preferredX, int preferredY) const {
                         continue;
                     const int surface = roadSurface(x, y);
                     if (surface <= 0) continue;
-                    const bool rn = roadSurface(x, y - 1) > 0;
-                    const bool rs = roadSurface(x, y + 1) > 0;
-                    const bool rw = roadSurface(x - 1, y) > 0;
-                    const bool re = roadSurface(x + 1, y) > 0;
                     if (pass == 0) {
-                        const bool straight =
-                            (rn && rs && !rw && !re) ||
-                            (rw && re && !rn && !rs);
-                        if (!straight) continue;
+                        // A proper street: narrow across, long along.  Using
+                        // the corridor extents (not just the four immediate
+                        // neighbours) keeps the spawn out of wide junctions
+                        // and parking plazas, where the interior cells touch
+                        // road on all four sides.
+                        int east = 0, west = 0, south = 0, north = 0;
+                        while (east < 12 && roadSurface(x + east + 1, y) > 0)
+                            ++east;
+                        while (west < 12 && roadSurface(x - west - 1, y) > 0)
+                            ++west;
+                        while (south < 12 && roadSurface(x, y + south + 1) > 0)
+                            ++south;
+                        while (north < 12 && roadSurface(x, y - north - 1) > 0)
+                            ++north;
+                        const int widthX = west + east + 1;
+                        const int widthZ = north + south + 1;
+                        const bool vertical = widthZ >= 4 && widthX <= 5;
+                        const bool horizontal = widthX >= 4 && widthZ <= 5;
+                        if (!vertical && !horizontal) continue;
                     } else if (pass == 1) {
-                        const int roads = (rn ? 1 : 0) + (rs ? 1 : 0) +
-                                          (rw ? 1 : 0) + (re ? 1 : 0);
-                        if (roads < 3) continue;
+                        const int roads =
+                            (roadSurface(x, y - 1) > 0 ? 1 : 0) +
+                            (roadSurface(x, y + 1) > 0 ? 1 : 0) +
+                            (roadSurface(x - 1, y) > 0 ? 1 : 0) +
+                            (roadSurface(x + 1, y) > 0 ? 1 : 0);
+                        if (roads < 2) continue;
                     }
                     return Vec3{x + 0.5f, static_cast<float>(surface), y + 0.5f};
                 }
@@ -559,79 +573,82 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
         const float x1 = x0 + 1.0f;
         const float z0 = static_cast<float>(cz);
         const float z1 = z0 + 1.0f;
-        const bool rn = roadAt(cx, cz - 1);
-        const bool rs = roadAt(cx, cz + 1);
-        const bool rw = roadAt(cx - 1, cz);
-        const bool re = roadAt(cx + 1, cz);
-        const int count = (rn ? 1 : 0) + (rs ? 1 : 0) + (rw ? 1 : 0) +
-                          (re ? 1 : 0);
-        const float inset = 0.055f;
-        const float line = 0.032f;
         const float y = lidY + 0.02f;
-        const float pr = 0.93f, pg = 0.76f, pb = 0.12f;
+        const float pr = 0.98f, pg = 0.80f, pb = 0.12f;
+        const float inset = 0.055f;
+        const float line = 0.05f;
 
-        // Continuous edge paint wherever the road meets pavement or a wall.
-        // No inset along the edge itself so neighbouring cells join cleanly.
-        if (!rn)
-            paintRect(x0, z0 + inset, x1, z0 + inset + line, y, pr, pg, pb);
-        if (!rs)
-            paintRect(x0, z1 - inset - line, x1, z1 - inset, y, pr, pg, pb);
-        if (!rw)
-            paintRect(x0 + inset, z0, x0 + inset + line, z1, y, pr, pg, pb);
-        if (!re)
-            paintRect(x1 - inset - line, z0, x1 - inset, z1, y, pr, pg, pb);
+        // Corridor extents: how far the carriageway continues on each side.
+        int east = 0, west = 0, south = 0, north = 0;
+        while (east < 20 && roadAt(cx + east + 1, cz)) ++east;
+        while (west < 20 && roadAt(cx - west - 1, cz)) ++west;
+        while (south < 20 && roadAt(cx, cz + south + 1)) ++south;
+        while (north < 20 && roadAt(cx, cz - north - 1)) ++north;
+        const int widthX = west + east + 1;  // perpendicular for a N-S road
+        const int widthZ = north + south + 1; // perpendicular for an E-W road
+        const int runZ = widthZ;
+        const int runX = widthX;
+        const bool vertical = runZ >= 3 && widthX <= 8;
+        const bool horizontal = runX >= 3 && widthZ <= 8;
+        if (!vertical && !horizontal) return; // junction or open plaza
 
-        // Centre and lane paint only along straight stretches of a street
-        // (not inside junctions or plazas).
-        if (count != 2) return;
-        if (!((rn && rs) || (rw && re))) return;
-        const bool vertical = rn && rs;
-        int lo = vertical ? cx : cz;
-        int hi = lo;
-        while (lo > 0) {
-            const bool road = vertical ? roadAt(lo - 1, cz) : roadAt(cx, lo - 1);
-            if (!road || hi - lo >= 11) break;
-            --lo;
+        // Solid edge paint along the kerbs.
+        if (vertical) {
+            if (west == 0)
+                paintRect(x0 + inset, z0, x0 + inset + line, z1, y, pr, pg, pb);
+            if (east == 0)
+                paintRect(x1 - inset - line, z0, x1 - inset, z1, y, pr, pg, pb);
         }
-        while (hi < CityMap::kSize - 1) {
-            const bool road = vertical ? roadAt(hi + 1, cz) : roadAt(cx, hi + 1);
-            if (!road || hi - lo >= 11) break;
-            ++hi;
+        if (horizontal) {
+            if (north == 0)
+                paintRect(x0, z0 + inset, x1, z0 + inset + line, y, pr, pg, pb);
+            if (south == 0)
+                paintRect(x0, z1 - inset - line, x1, z1 - inset, y, pr, pg, pb);
         }
-        const float low = static_cast<float>(lo);
-        const float high = static_cast<float>(hi + 1);
-        const float centre = (low + high) * 0.5f;
-        const float here = static_cast<float>(vertical ? cx : cz);
-        const bool onEven = ((vertical ? cz : cx) & 1) == 0;
-        if (!onEven) return;
 
-        auto dashAlong = [&](float position, float width, bool split) {
-            if (split) {
-                paintRect(position - width * 0.5f - 0.045f,
-                          vertical ? z0 + 0.14f : position - width * 0.5f - 0.045f,
-                          position - 0.045f,
-                          vertical ? z1 - 0.14f : position + width * 0.5f + 0.045f,
-                          y, pr, pg, pb);
+        // Lane separators every two cells out from the corridor centre, with
+        // the dash phase tied to the along-road cell index so they line up
+        // between lanes instead of staggering.
+        auto paintAlong = [&](float position, bool alongZ) {
+            if (alongZ) {
+                if ((cz & 1) != 0) return;
+                paintRect(position - line * 0.5f, z0 + 0.16f,
+                          position + line * 0.5f, z1 - 0.16f, y, pr, pg, pb);
+            } else {
+                if ((cx & 1) != 0) return;
+                paintRect(x0 + 0.16f, position - line * 0.5f, x1 - 0.16f,
+                          position + line * 0.5f, y, pr, pg, pb);
             }
         };
-        (void)dashAlong;
-
-        // Lane separators every two cells out from the centre.
-        for (int offset = 0; offset <= 8; offset += 2) {
-            for (int side = -1; side <= 1; side += 2) {
-                if (offset == 0 && side == 1) continue;
-                const float position = centre + side * offset;
-                if (position < low + 0.6f || position > high - 0.6f) continue;
-                if (std::floor(position) != here) continue;
-                const float width = offset == 0 ? 0.045f : 0.04f;
-                if (vertical) {
-                    paintRect(position - width * 0.5f, z0 + 0.14f,
-                              position + width * 0.5f, z1 - 0.14f, y, pr, pg,
-                              pb);
-                } else {
-                    paintRect(x0 + 0.14f, position - width * 0.5f,
-                              x1 - 0.14f, position + width * 0.5f, y, pr, pg,
-                              pb);
+        if (vertical) {
+            const float low = static_cast<float>(cx - west);
+            const float high = static_cast<float>(cx + east + 1);
+            const float centre = (low + high) * 0.5f;
+            for (int offset = 0; offset <= 8; offset += 2) {
+                for (int side = -1; side <= 1; side += 2) {
+                    if (offset == 0 && side == 1) continue;
+                    const float position = centre + side * offset;
+                    if (position < low + 0.5f || position > high - 0.5f)
+                        continue;
+                    if (std::floor(position) != static_cast<float>(cx))
+                        continue;
+                    paintAlong(position, true);
+                }
+            }
+        }
+        if (horizontal) {
+            const float low = static_cast<float>(cz - north);
+            const float high = static_cast<float>(cz + south + 1);
+            const float centre = (low + high) * 0.5f;
+            for (int offset = 0; offset <= 8; offset += 2) {
+                for (int side = -1; side <= 1; side += 2) {
+                    if (offset == 0 && side == 1) continue;
+                    const float position = centre + side * offset;
+                    if (position < low + 0.5f || position > high - 0.5f)
+                        continue;
+                    if (std::floor(position) != static_cast<float>(cz))
+                        continue;
+                    paintAlong(position, false);
                 }
             }
         }
@@ -718,21 +735,7 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
                             z + 1 == columnSurface &&
                             columnSurface <= static_cast<int>(baseHeight_) + 1 &&
                             assets.isRoadTile(block->lid);
-                        bool wideOpen = false;
-                        if (cleanRoads_ && isGroundRoad) {
-                            int runX = 1, runZ = 1;
-                            while (runX < 12 && roadAt(cellX - runX, cellY))
-                                ++runX;
-                            while (runX < 12 && roadAt(cellX + runX, cellY))
-                                ++runX;
-                            while (runZ < 12 && roadAt(cellX, cellY - runZ))
-                                ++runZ;
-                            while (runZ < 12 && roadAt(cellX, cellY + runZ))
-                                ++runZ;
-                            wideOpen = std::min(runX, runZ) > 8;
-                        }
-                        const bool groundRoad =
-                            isGroundRoad && cleanRoads_ && !wideOpen;
+                        const bool groundRoad = isGroundRoad && cleanRoads_;
                         if (groundRoad) {
                             const TileUV plain = assets.lidUV(
                                 assets.plainRoadLid(), block->remapIndex());

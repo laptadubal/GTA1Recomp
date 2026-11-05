@@ -46,7 +46,7 @@ struct GameConfig {
     std::string city = "NYC";
     int carIndex = 0;
     bool showDebug = false;
-    bool cleanRoads = false; // procedural lane paint instead of baked road tiles
+    bool cleanRoads = true; // procedural lane paint instead of baked road tiles
     SaveGame save;
 };
 
