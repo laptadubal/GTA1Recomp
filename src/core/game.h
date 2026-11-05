@@ -68,6 +68,10 @@ private:
         MissionType type = MissionType::Reach;
         float timeLimit = 90.0f;
         int reward = 500;
+        // District named in the briefing (index into the CMP sectors) and the
+        // compass sub-area it mentions (1=N, 2=S, 4=E, 8=W).
+        int district = -1;
+        int sub = 0;
     };
 
     struct MissionCar {
@@ -289,6 +293,11 @@ private:
     bool chooseMissionLocation(float minDistance, float maxDistance, Vec3& out);
     bool chooseRoadLocation(const Vec3& origin, float minDistance,
                             float maxDistance, Vec3& out);
+    bool chooseRoadLocationInDistrict(int district, int sub, Vec3& out);
+    int districtForText(const std::string& text, int* sub) const;
+    std::string districtLabel(int district, int sub) const;
+    MissionType inferMissionType(const std::string& text,
+                                 MissionType fallback) const;
     void clearMissionEntities();
     void takeMissionCar();
     void pickupMissionPassenger();
@@ -475,6 +484,9 @@ private:
     float sirenTimer_ = 0.0f;
     std::vector<Phone> phones_;
     std::vector<MissionPlan> missions_;
+    std::vector<std::string> sectorNames_;
+    int missionDistrict_ = -1;
+    int missionSub_ = 0;
     int activePhone_ = 0;
     int targetPhone_ = -1;
     int missionIndex_ = 0;

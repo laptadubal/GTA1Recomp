@@ -500,6 +500,17 @@ void Game::loadMissionData() {
     resultText_.clear();
     briefingText_.clear();
 
+    // Resolve the named districts from the CMP navigation table through the
+    // ENGLISH.FXT area strings (e.g. "001area014" -> "Ardler").
+    sectorNames_.assign(assets_.map().sectors.size(), std::string());
+    for (size_t i = 0; i < assets_.map().sectors.size(); ++i) {
+        char key[32];
+        std::snprintf(key, sizeof(key), "001area%03u",
+                      static_cast<unsigned>(assets_.map().sectors[i].sample));
+        const auto it = fxt_.find(key);
+        if (it != fxt_.end()) sectorNames_[i] = it->second;
+    }
+
     const std::string dataDir = assets_.dataDir();
     if (!dataDir.empty()) {
         std::ifstream file(std::filesystem::path(dataDir) / "MISSION.INI");
@@ -786,7 +797,8 @@ void Game::buildMissionPlan() {
         if (it == fxt_.end() || it->second.empty()) continue;
         MissionPlan plan;
         plan.briefing = it->second;
-        plan.type = seed.type;
+        plan.district = districtForText(plan.briefing, &plan.sub);
+        plan.type = inferMissionType(plan.briefing, seed.type);
         plan.timeLimit = seed.time;
         plan.reward = seed.reward;
         missions_.push_back(std::move(plan));
@@ -814,6 +826,137 @@ void Game::buildMissionPlan() {
         missionIndex_ >= static_cast<int>(missions_.size())) {
         missionIndex_ = 0;
     }
+}
+
+bool Game::chooseRoadLocationInDistrict(int district, int sub, Vec3& out) {
+    const auto& sectors = assets_.map().sectors;
+    if (district < 0 || district >= static_cast<int>(sectors.size())) return false;
+    const MapSector& sector = sectors[static_cast<size_t>(district)];
+    const int fullX0 = sector.x;
+    const int fullY0 = sector.y;
+    const int fullX1 = std::min(CityMap::kSize - 1, sector.x + sector.w);
+    const int fullY1 = std::min(CityMap::kSize - 1, sector.y + sector.h);
+
+    auto pickInRect = [&](int x0, int y0, int x1, int y1, Vec3& result) {
+        if (x1 < x0 || y1 < y0) return false;
+        std::uniform_int_distribution<int> rx(x0, x1);
+        std::uniform_int_distribution<int> ry(y0, y1);
+        for (int attempt = 0; attempt < 3000; ++attempt) {
+            const int x = rx(rng_);
+            const int y = ry(rng_);
+            const int surface = world_.roadSurface(x, y);
+            if (surface <= 0) continue;
+            result = Vec3{x + 0.5f, static_cast<float>(surface), y + 0.5f};
+            return true;
+        }
+        return false;
+    };
+
+    // Sub-area of the district mentioned in the briefing (north-east park,
+    // west docks, ...).  Halves are precise enough for mission placement.
+    int x0 = fullX0, y0 = fullY0, x1 = fullX1, y1 = fullY1;
+    const int halfW = std::max(1, (fullX1 - fullX0) / 2);
+    const int halfH = std::max(1, (fullY1 - fullY0) / 2);
+    if (sub & 8) x1 = fullX0 + halfW;
+    if (sub & 4) x0 = fullX0 + halfW;
+    if (sub & 1) y1 = fullY0 + halfH;
+    if (sub & 2) y0 = fullY0 + halfH;
+
+    if (pickInRect(x0, y0, x1, y1, out)) return true;
+    if (pickInRect(fullX0, fullY0, fullX1, fullY1, out)) return true;
+    return false;
+}
+
+int Game::districtForText(const std::string& text, int* sub) const {
+    if (sub) *sub = 0;
+    const auto& sectors = assets_.map().sectors;
+    if (sectorNames_.size() != sectors.size()) return -1;
+
+    std::string lower;
+    lower.reserve(text.size());
+    for (char c : text) {
+        lower.push_back(static_cast<char>(
+            std::tolower(static_cast<unsigned char>(c))));
+    }
+
+    int best = -1;
+    size_t bestLength = 0;
+    size_t bestPos = 0;
+    for (size_t i = 0; i < sectorNames_.size(); ++i) {
+        std::string name = sectorNames_[i];
+        if (name.size() < 4) continue;
+        for (char& c : name) {
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        size_t pos = lower.find(name);
+        while (pos != std::string::npos) {
+            const bool leftOk =
+                pos == 0 || !std::isalnum(static_cast<unsigned char>(lower[pos - 1]));
+            const size_t end = pos + name.size();
+            const bool rightOk =
+                end >= lower.size() ||
+                !std::isalnum(static_cast<unsigned char>(lower[end]));
+            if (leftOk && rightOk) break;
+            pos = lower.find(name, pos + 1);
+        }
+        if (pos == std::string::npos) continue;
+        if (name.size() > bestLength) {
+            best = static_cast<int>(i);
+            bestLength = name.size();
+            bestPos = pos;
+        }
+    }
+    if (best < 0) return -1;
+    if (sub) {
+        const size_t start = bestPos > 34 ? bestPos - 34 : 0;
+        const std::string before = lower.substr(start, bestPos - start);
+        int bits = 0;
+        if (before.find("north") != std::string::npos) bits |= 1;
+        if (before.find("south") != std::string::npos) bits |= 2;
+        if (before.find("east") != std::string::npos) bits |= 4;
+        if (before.find("west") != std::string::npos) bits |= 8;
+        *sub = bits;
+    }
+    return best;
+}
+
+std::string Game::districtLabel(int district, int sub) const {
+    if (district < 0 || district >= static_cast<int>(sectorNames_.size()))
+        return {};
+    std::string label;
+    if (sub & 1) label += "NORTH ";
+    if (sub & 2) label += "SOUTH ";
+    if (sub & 4) label += "EAST ";
+    if (sub & 8) label += "WEST ";
+    for (char c : sectorNames_[static_cast<size_t>(district)]) {
+        label.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(c))));
+    }
+    return label;
+}
+
+Game::MissionType Game::inferMissionType(const std::string& text,
+                                         MissionType fallback) const {
+    std::string lower;
+    lower.reserve(text.size());
+    for (char c : text) {
+        lower.push_back(static_cast<char>(
+            std::tolower(static_cast<unsigned char>(c))));
+    }
+    auto has = [&](const char* word) {
+        return lower.find(word) != std::string::npos;
+    };
+    if (has("assassin") || has("murder") || has("waste") || has("kill") ||
+        has("dead"))
+        return MissionType::KillPed;
+    if (has("blow up") || has("blow the") || has("destroy") || has("bomb"))
+        return MissionType::DestroyCar;
+    if (has("pick up") || has("pickup") || has("pick him") ||
+        has("get him") || has("collect him"))
+        return MissionType::Pickup;
+    if (has("steal") || has("get the car") || has("bring the car") ||
+        has("deliver the car") || has("pick up the car"))
+        return MissionType::StealDeliver;
+    return fallback;
 }
 
 bool Game::chooseRoadLocation(const Vec3& origin, float minDistance,
@@ -899,6 +1042,8 @@ void Game::startBriefing() {
     missionType_ = plan.type;
     missionTimeLimit_ = plan.timeLimit;
     missionReward_ = plan.reward;
+    missionDistrict_ = plan.district;
+    missionSub_ = plan.sub;
     missionState_ = MissionState::Briefing;
     resultText_.clear();
 }
@@ -911,6 +1056,8 @@ void Game::beginMission() {
     missionType_ = plan.type;
     missionTimeLimit_ = plan.timeLimit;
     missionReward_ = plan.reward;
+    missionDistrict_ = plan.district;
+    missionSub_ = plan.sub;
     missionPhase_ = MissionPhase::GoToTarget;
     missionTimeLeft_ = plan.timeLimit;
     missionCarTaken_ = false;
@@ -919,12 +1066,21 @@ void Game::beginMission() {
     clearMissionEntities();
     missionPhase_ = MissionPhase::GoToTarget;
 
-    if (!chooseMissionLocation(24.0f, 82.0f, missionSource_)) {
-        const Vec3 player = playerPosition();
-        missionSource_ = Vec3{player.x + 20.0f, player.y, player.z};
+    if (missionDistrict_ < 0 ||
+        !chooseRoadLocationInDistrict(missionDistrict_, missionSub_,
+                                      missionSource_)) {
+        if (!chooseMissionLocation(24.0f, 82.0f, missionSource_)) {
+            const Vec3 player = playerPosition();
+            missionSource_ = Vec3{player.x + 20.0f, player.y, player.z};
+        }
     }
     missionDest_ = missionSource_;
     targetPos_ = missionSource_;
+
+    const std::string where =
+        missionDistrict_ >= 0
+            ? " IN " + districtLabel(missionDistrict_, missionSub_)
+            : std::string();
 
     auto roadYaw = [&](const Vec3& pos) {
         const int cx = static_cast<int>(std::floor(pos.x));
@@ -960,12 +1116,12 @@ void Game::beginMission() {
 
     switch (missionType_) {
     case MissionType::Reach:
-        setObjective("GO TO THE MARKER");
+        setObjective("GO TO THE MARKER" + where);
         break;
     case MissionType::StealDeliver: {
         const int sprite = randomCarSprite();
         if (sprite < 0) {
-            setObjective("STEAL THE CAR");
+            setObjective("STEAL THE CAR" + where);
             break;
         }
         missionCar_.active = true;
@@ -979,13 +1135,13 @@ void Game::beginMission() {
         missionCar_.height = info.h / 64.0f * 1.35f;
         missionCar_.health = 120;
         assets_.spriteTexture(sprite);
-        setObjective("STEAL THE CAR AT THE MARKER");
+        setObjective("STEAL THE CAR" + where);
         break;
     }
     case MissionType::DestroyCar: {
         const int sprite = randomCarSprite();
         if (sprite < 0) {
-            setObjective("DESTROY THE CAR");
+            setObjective("DESTROY THE CAR" + where);
             break;
         }
         missionCar_.active = true;
@@ -999,7 +1155,7 @@ void Game::beginMission() {
         missionCar_.height = info.h / 64.0f * 1.35f;
         missionCar_.health = 120;
         assets_.spriteTexture(sprite);
-        setObjective("DESTROY THE CAR");
+        setObjective("DESTROY THE CAR" + where);
         break;
     }
     case MissionType::KillPed: {
@@ -1014,7 +1170,7 @@ void Game::beginMission() {
         missionPed_.width = info.w / 64.0f * 1.5f;
         missionPed_.height = info.h / 64.0f * 1.5f;
         assets_.spriteTexture(sprite);
-        setObjective("WASTE THE TARGET");
+        setObjective("WASTE THE TARGET" + where);
         break;
     }
     case MissionType::Pickup: {
@@ -1028,7 +1184,7 @@ void Game::beginMission() {
         missionPed_.width = info.w / 64.0f * 1.5f;
         missionPed_.height = info.h / 64.0f * 1.5f;
         assets_.spriteTexture(sprite);
-        setObjective("PICK UP THE CONTACT");
+        setObjective("PICK UP THE CONTACT" + where);
         break;
     }
     }

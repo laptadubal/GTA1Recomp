@@ -126,6 +126,26 @@ bool loadCityMap(const std::string& path, CityMap& out, std::string& error) {
         o.roll = rd16(p + 12);
     }
 
+    // Route, locations (36 * 3 bytes) and the named-sector navigation table.
+    offset += map.objectPosSize;
+    offset += map.routeSize;
+    offset += 36 * 3;
+    if (map.navDataSize >= 35 && offset + map.navDataSize <= data.size()) {
+        const size_t sectorCount = map.navDataSize / 35;
+        map.sectors.reserve(sectorCount);
+        for (size_t i = 0; i < sectorCount; ++i) {
+            const uint8_t* p = data.data() + offset + i * 35;
+            MapSector sector;
+            sector.x = p[0];
+            sector.y = p[1];
+            sector.w = p[2];
+            sector.h = p[3];
+            sector.sample = p[4];
+            if (sector.w == 0 || sector.h == 0) continue;
+            map.sectors.push_back(std::move(sector));
+        }
+    }
+
     out = std::move(map);
     return true;
 }

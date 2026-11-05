@@ -33,6 +33,15 @@ struct MapBlock {
     }
 };
 
+// Named district stored in the CMP navigation table.  Each record is 35 bytes:
+// x, y, width, height, an FXT sample number and a 30-byte name field.  The
+// engine resolves the display name from ENGLISH.FXT instead.
+struct MapSector {
+    uint8_t x = 0, y = 0, w = 0, h = 0;
+    uint8_t sample = 0;
+    std::string name;
+};
+
 struct MapObject {
     uint16_t x = 0, y = 0, z = 0; // 8.8 fixed point
     uint8_t type = 0;
@@ -55,6 +64,7 @@ struct CityMap {
     std::vector<uint16_t> column;  // block columns
     std::vector<MapBlock> blocks;
     std::vector<MapObject> objects;
+    std::vector<MapSector> sectors;
 
     bool valid() const { return version == 331 && base.size() == kSize * kSize; }
 

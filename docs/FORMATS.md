@@ -197,6 +197,21 @@ arrow, digits, boat, box, bus, car, object, ped, speedo, tank, ...
 For `STYLE001.GRY` the car group starts at `24 + 0 + 1 + 0 + 6 = 31`,
 so car sprite `s` is at absolute index `31 + s`.
 
+## Named districts (nav data)
+
+After the route and the 36×3-byte location table comes the navigation data:
+`navDataSize / 35` records of
+
+```
+0  uint8 x, 1 y, 2 width, 3 height
+4  uint8 sample       (FXT key suffix)
+5  30 bytes           name (the engine resolves it through ENGLISH.FXT)
+```
+
+The sample number addresses an area string `[001areaNNN]` in `ENGLISH.FXT`,
+e.g. `001area014` → `Ardler`.  The engine uses these rectangles to place
+mission targets in the district named by the briefing text.
+
 ## Coordinate conventions
 
 * Map cell `(x, y)` covers world `x .. x+1`, `z .. z+1`.
