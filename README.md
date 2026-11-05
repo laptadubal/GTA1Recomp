@@ -196,9 +196,10 @@ Menu navigation: `W`/`S` or `↑`/`↓`, `A`/`D` or `←`/`→` to change values
 
 Graphics/audio settings, the last window size, the selected city and the
 single-player campaign (including a CONTINUE entry in the main menu) are saved
-to the SDL preference directory (`config.ini`).  Set `clean_roads = true` there
-to replace the original lane tiles with plain asphalt plus procedural paint if
-you prefer a cleaner modern road look.
+to the SDL preference directory (`config.ini`).  The OPTIONS screen exposes a
+**ROAD STYLE** switch (also `clean_roads` in `config.ini`): `ORIGINAL` uses the
+authored lane tiles, `CLEAN` replaces them with plain asphalt and procedural
+paint for a more modern, uncluttered look.
 
 ## Project layout
 
