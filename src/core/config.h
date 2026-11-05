@@ -12,7 +12,7 @@ struct GraphicsConfig {
     int msaa = 4;          // 0, 2, 4, 8, 16
     bool fxaa = true;
     float renderScale = 1.0f;
-    float cameraZoom = 1.0f;
+    float cameraZoom = 0.85f;
 };
 
 struct AudioConfig {

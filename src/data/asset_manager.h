@@ -37,8 +37,9 @@ public:
     int atlasHeight() const { return atlasH_; }
     GLuint minimapTexture() const { return minimap_; }
 
-    TileUV sideUV(int index1Based) const;
-    TileUV lidUV(int index1Based) const;
+    // remap selects one of the four palette variants stored in the atlas.
+    TileUV sideUV(int index1Based, int remap = 0) const;
+    TileUV lidUV(int index1Based, int remap = 0) const;
 
     // True for lid tiles that look like asphalt roads (dark with lane
     // markings).  Classified from the palette at load time so all three
@@ -76,6 +77,7 @@ private:
     bool buildAtlas(std::string& error);
     bool buildMinimap(std::string& error);
     void classifyRoadLids();
+    TileUV remapped(TileUV uv, int remap) const;
 
     std::string dataDir_;
     std::string cityName_;
@@ -91,6 +93,7 @@ private:
     std::vector<TileUV> sideUVs_;
     std::vector<TileUV> lidUVs_;
     std::vector<TileUV> auxUVs_;
+    int variantStride_ = 0; // pixels per palette variant in the atlas
     std::vector<uint8_t> lidIsRoad_;
     std::vector<uint8_t> lidIsWater_;
     std::vector<uint8_t> lidIsGrass_;

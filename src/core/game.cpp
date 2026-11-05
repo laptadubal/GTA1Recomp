@@ -1520,7 +1520,7 @@ void Game::beginPlay() {
         pendingScore_ = 0;
     }
     camera_.setZoom(config_.graphics.cameraZoom);
-    camera_.setTilt(66.0f);
+    camera_.setTilt(72.0f);
     camera_.snapTo(playerPosition());
     menuIndex_ = 0;
     screen_ = Screen::Playing;
@@ -2305,7 +2305,7 @@ void Game::updatePlaying(float dt, InputManager& input, AudioManager& audio) {
 
     if (input.pressed(GameAction::ToggleCamera)) {
         cameraMode_ = (cameraMode_ + 1) % 3;
-        const float tilts[3] = {66.0f, 55.0f, 78.0f};
+        const float tilts[3] = {72.0f, 60.0f, 82.0f};
         camera_.setTilt(tilts[cameraMode_]);
     }
     if (input.pressed(GameAction::ZoomIn)) {
@@ -2354,6 +2354,21 @@ void Game::updatePlaying(float dt, InputManager& input, AudioManager& audio) {
             vehicle_.reset(targetPos_);
         } else {
             footPos_ = targetPos_;
+        }
+        // Make the assault-style objectives completable so a long soak run
+        // can walk the whole 22-job chapter.
+        if (missionType_ == MissionType::KillPed && missionPed_.active) {
+            missionPed_.health = 0.0f;
+            if (getenv("GTA_DEMO_DEBUG") && missionPed_.alive) {
+                std::fprintf(stderr, "[ped] active=%d alive=%d hp=%.0f\n",
+                             (int)missionPed_.active, (int)missionPed_.alive,
+                             missionPed_.health);
+            }
+        }
+        if (missionType_ == MissionType::DestroyCar && missionCar_.active) {
+            missionCar_.active = false;
+            explodeAt(missionCar_.pos, 3.2f, 40, audio, true);
+            completeMission(true, audio);
         }
         if (getenv("GTA_DEMO_DEBUG")) {
             std::fprintf(stderr, "[skip] mission %d type %d phase %d score %d\n",

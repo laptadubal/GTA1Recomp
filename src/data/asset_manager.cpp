@@ -332,10 +332,15 @@ bool AssetManager::buildAtlas(std::string& error) {
         return false;
     }
 
+    // Four palette variants: the map flags one of the first four remap rows on
+    // each block (road types, building shades).  They live side by side in one
+    // atlas so a chunk can pick the right variant per vertex UV.
+    constexpr int kVariants = 4;
     const int cell = 64;
     const int cols = 16;
     const int rows = (slots + cols - 1) / cols;
-    atlasW_ = cols * cell;
+    variantStride_ = cols * cell;
+    atlasW_ = cols * cell * kVariants;
     atlasH_ = rows * cell;
     std::vector<uint8_t> pixels(static_cast<size_t>(atlasW_) * atlasH_ * 4, 0);
 
@@ -343,38 +348,49 @@ bool AssetManager::buildAtlas(std::string& error) {
     lidUVs_.resize(lidSlots_ + 1);
     auxUVs_.resize(static_cast<size_t>(std::max(0, slots - sideSlots_ - lidSlots_)));
 
+    const uint8_t* remapTable = gry_.remapTables.empty() ? nullptr : gry_.remapTables.data();
     std::vector<uint8_t> tile(4096);
     auto placeTile = [&](int slot) {
         if (!gry_.tileData(slot, tile.data())) return;
-        const int cx = (slot % cols) * cell;
-        const int cy = (slot / cols) * cell;
-        for (int y = 0; y < cell; ++y) {
-            for (int x = 0; x < cell; ++x) {
-                const uint8_t idx = tile[static_cast<size_t>(y) * cell + x];
-                const size_t o = (static_cast<size_t>(cy + y) * atlasW_ + cx + x) * 4;
-                pixels[o + 0] = gry_.palette.rgb[idx * 3 + 0];
-                pixels[o + 1] = gry_.palette.rgb[idx * 3 + 1];
-                pixels[o + 2] = gry_.palette.rgb[idx * 3 + 2];
-                // Palette index 0 is the transparency key for sprites and
-                // for the "flat" map decals (trees, road markings, ...).
-                // Opaque blocks are drawn with the alpha test disabled, so
-                // their black pixels still come out black.
-                pixels[o + 3] = idx == 0 ? 0 : 255;
+        for (int variant = 0; variant < kVariants; ++variant) {
+            const int cx = (slot % cols) * cell + variant * variantStride_;
+            const int cy = (slot / cols) * cell;
+            const uint8_t* row = nullptr;
+            if (variant > 0 && remapTable &&
+                gry_.remapTables.size() >= static_cast<size_t>(variant + 1) * 256) {
+                row = remapTable + static_cast<size_t>(variant) * 256;
             }
-        }
-        const float inset = 0.5f;
-        TileUV uv;
-        uv.u0 = (cx + inset) / atlasW_;
-        uv.v0 = (cy + inset) / atlasH_;
-        uv.u1 = (cx + cell - inset) / atlasW_;
-        uv.v1 = (cy + cell - inset) / atlasH_;
-        if (slot >= sideSlots_ && slot < sideSlots_ + lidSlots_) {
-            lidUVs_[slot - sideSlots_] = uv;
-        } else if (slot < sideSlots_) {
-            sideUVs_[slot] = uv;
-        } else {
-            const size_t aux = static_cast<size_t>(slot - sideSlots_ - lidSlots_);
-            if (aux < auxUVs_.size()) auxUVs_[aux] = uv;
+            for (int y = 0; y < cell; ++y) {
+                for (int x = 0; x < cell; ++x) {
+                    const uint8_t raw = tile[static_cast<size_t>(y) * cell + x];
+                    const uint8_t index = row ? row[raw] : raw;
+                    const size_t o =
+                        (static_cast<size_t>(cy + y) * atlasW_ + cx + x) * 4;
+                    pixels[o + 0] = gry_.palette.rgb[index * 3 + 0];
+                    pixels[o + 1] = gry_.palette.rgb[index * 3 + 1];
+                    pixels[o + 2] = gry_.palette.rgb[index * 3 + 2];
+                    // Palette index 0 is the transparency key for sprites and
+                    // for the "flat" map decals (trees, road markings, ...).
+                    pixels[o + 3] = raw == 0 ? 0 : 255;
+                }
+            }
+            if (variant == 0) {
+                const float inset = 0.5f;
+                TileUV uv;
+                uv.u0 = (cx + inset) / atlasW_;
+                uv.v0 = (cy + inset) / atlasH_;
+                uv.u1 = (cx + cell - inset) / atlasW_;
+                uv.v1 = (cy + cell - inset) / atlasH_;
+                if (slot >= sideSlots_ && slot < sideSlots_ + lidSlots_) {
+                    lidUVs_[slot - sideSlots_] = uv;
+                } else if (slot < sideSlots_) {
+                    sideUVs_[slot] = uv;
+                } else {
+                    const size_t aux =
+                        static_cast<size_t>(slot - sideSlots_ - lidSlots_);
+                    if (aux < auxUVs_.size()) auxUVs_[aux] = uv;
+                }
+            }
         }
     };
 
@@ -389,31 +405,45 @@ bool AssetManager::buildAtlas(std::string& error) {
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, atlasW_, atlasH_, 0, GL_RGBA,
                  GL_UNSIGNED_BYTE, pixels.data());
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    // Bilinear filtering keeps the 64x64 asphalt tiles from shimmering when
+    // the fixed-angle camera stretches them; mipmaps are avoided because the
+    // atlas has no padding between tiles.
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glBindTexture(GL_TEXTURE_2D, 0);
     return true;
 }
 
-TileUV AssetManager::sideUV(int index1Based) const {
+TileUV AssetManager::remapped(TileUV uv, int remap) const {
+    if (remap <= 0 || variantStride_ <= 0 || atlasW_ <= 0) return uv;
+    const float shift = static_cast<float>(remap * variantStride_) /
+                        static_cast<float>(atlasW_);
+    uv.u0 += shift;
+    uv.u1 += shift;
+    return uv;
+}
+
+TileUV AssetManager::sideUV(int index1Based, int remap) const {
     // Side tile N occupies atlas slot N (slot 0 is unused by the maps).
     const int i = index1Based;
     if (i <= 0) return TileUV{};
     const int slot = i;
-    if (slot < sideSlots_) return sideUVs_[static_cast<size_t>(slot)];
+    if (slot < sideSlots_) {
+        return remapped(sideUVs_[static_cast<size_t>(slot)], remap);
+    }
     if (slot < sideSlots_ + lidSlots_) {
-        return lidUVs_[static_cast<size_t>(slot - sideSlots_)];
+        return remapped(lidUVs_[static_cast<size_t>(slot - sideSlots_)], remap);
     }
     const int aux = slot - sideSlots_ - lidSlots_;
     if (aux >= 0 && aux < static_cast<int>(auxUVs_.size())) {
-        return auxUVs_[static_cast<size_t>(aux)];
+        return remapped(auxUVs_[static_cast<size_t>(aux)], remap);
     }
     return TileUV{};
 }
 
-TileUV AssetManager::lidUV(int index1Based) const {
+TileUV AssetManager::lidUV(int index1Based, int remap) const {
     // Lid tile N occupies atlas slot numSide + N.  Some maps (SANB) use
     // indices beyond the lid section, which actually refer to the auxiliary
     // tile bank that follows it in the GRY archive.
@@ -421,11 +451,11 @@ TileUV AssetManager::lidUV(int index1Based) const {
     if (i <= 0) return TileUV{};
     const int slot = sideSlots_ + i;
     if (slot < sideSlots_ + lidSlots_) {
-        return lidUVs_[static_cast<size_t>(slot - sideSlots_)];
+        return remapped(lidUVs_[static_cast<size_t>(slot - sideSlots_)], remap);
     }
     const int aux = slot - sideSlots_ - lidSlots_;
     if (aux >= 0 && aux < static_cast<int>(auxUVs_.size())) {
-        return auxUVs_[static_cast<size_t>(aux)];
+        return remapped(auxUVs_[static_cast<size_t>(aux)], remap);
     }
     return TileUV{};
 }

@@ -32,7 +32,7 @@ private:
     float zoom_ = 1.0f;
     // GTA1 uses a fairly strong three-quarter view: the walls of buildings
     // are clearly visible while the street layout stays readable.
-    float tilt_ = 66.0f;
+    float tilt_ = 72.0f;
     float fov_ = 34.0f;
     // World units visible vertically at the target at zoom 1.
     float viewHeight_ = 11.0f;

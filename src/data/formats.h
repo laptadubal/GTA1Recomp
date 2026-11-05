@@ -31,6 +31,13 @@ struct MapBlock {
     uint8_t rotation() const {
         return static_cast<uint8_t>((typeMap & 16384 ? 1 : 0) + (typeMap & 32768 ? 2 : 0));
     }
+    // Palette remap variant (0..3) from the extension flags; selects one of
+    // the four remap rows in the GRY archive.
+    uint8_t remapIndex() const {
+        return static_cast<uint8_t>((typeMapExt >> 3) & 3);
+    }
+    bool flipTopBottom() const { return (typeMapExt & 32) != 0; }
+    bool flipLeftRight() const { return (typeMapExt & 64) != 0; }
 };
 
 // Named district stored in the CMP navigation table.  Each record is 35 bytes:

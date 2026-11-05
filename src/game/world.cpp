@@ -420,11 +420,14 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
     // roads (the "asset salad" look).
     auto addLid = [&](const Vec3& p0, const Vec3& p1, const Vec3& p2,
                       const Vec3& p3, const TileUV& uv, int rotation,
-                      bool transparent) {
+                      bool transparent, uint8_t flips = 0) {
         std::vector<uint32_t>& index =
             transparent ? alphaIndex : opaqueIndex;
-        const float us[4] = {uv.u0, uv.u1, uv.u1, uv.u0};
-        const float vs[4] = {uv.v0, uv.v0, uv.v1, uv.v1};
+        TileUV fuv = uv;
+        if (flips & 1) std::swap(fuv.v0, fuv.v1);
+        if (flips & 2) std::swap(fuv.u0, fuv.u1);
+        const float us[4] = {fuv.u0, fuv.u1, fuv.u1, fuv.u0};
+        const float vs[4] = {fuv.v0, fuv.v0, fuv.v1, fuv.v1};
         const Vec3* points[4] = {&p0, &p1, &p2, &p3};
         const uint32_t base = static_cast<uint32_t>(vertices.size());
         for (int i = 0; i < 4; ++i) {
@@ -476,15 +479,19 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
     // Nearest authored wall texture for one side of a column.  GTA1 only
     // stores the facade on the block that owns it; taller columns repeat the
     // same texture for the floors below/above.
-    auto pickSideTile = [&](int x, int y, int n, int z, int dir) -> uint8_t {
+    auto pickSideTile = [&](int x, int y, int n, int z, int dir,
+                            int& remapOut) -> uint8_t {
+        remapOut = 0;
         for (int distance = 0; distance < 6; ++distance) {
             const int below = z - distance;
             if (below >= 0 && below < n) {
                 const MapBlock* b = blockAtOrNull(x, y, below);
                 if (b) {
                     const uint8_t tile = sideTileOf(*b, dir);
-                    if (tile && assets_->sideUV(tile).u1 > assets_->sideUV(tile).u0)
+                    if (tile && assets_->sideUV(tile).u1 > assets_->sideUV(tile).u0) {
+                        remapOut = b->remapIndex();
                         return tile;
+                    }
                 }
             }
             if (distance == 0) continue;
@@ -493,12 +500,20 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
                 const MapBlock* b = blockAtOrNull(x, y, above);
                 if (b) {
                     const uint8_t tile = sideTileOf(*b, dir);
-                    if (tile && assets_->sideUV(tile).u1 > assets_->sideUV(tile).u0)
+                    if (tile && assets_->sideUV(tile).u1 > assets_->sideUV(tile).u0) {
+                        remapOut = b->remapIndex();
                         return tile;
+                    }
                 }
             }
         }
         return 0;
+    };
+
+    auto flipUV = [](TileUV uv, bool tb, bool lr) {
+        if (tb) std::swap(uv.v0, uv.v1);
+        if (lr) std::swap(uv.u0, uv.u1);
+        return uv;
     };
 
     struct Side {
@@ -565,7 +580,8 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
                 const float y1 = y0 + 1.0f;
 
                 if (block->lid) {
-                    const TileUV uv = assets.lidUV(block->lid);
+                    const TileUV uv =
+                        assets.lidUV(block->lid, block->remapIndex());
                     if (uv.u1 > uv.u0) {
                         float lidY = y1;
                         if (flat) {
@@ -575,9 +591,13 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
                             // and keep real building roofs at their height.
                             lidY = static_cast<float>(cellTop);
                         }
+                        const uint8_t flips =
+                            static_cast<uint8_t>((block->flipTopBottom() ? 1 : 0) |
+                                                 (block->flipLeftRight() ? 2 : 0));
                         addLid(Vec3{x0, lidY, z0}, Vec3{x1, lidY, z0},
                                Vec3{x1, lidY, z1}, Vec3{x0, lidY, z1}, uv,
-                               static_cast<int>(block->rotation()), flat);
+                               static_cast<int>(block->rotation()), flat,
+                               flips);
                     }
                 }
 
@@ -595,7 +615,9 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
                 for (const Side& side : sides) {
                     const uint8_t tile = sideTileOf(*block, side.dir);
                     if (!tile) continue;
-                    const TileUV uv = assets.sideUV(tile);
+                    const TileUV uv = flipUV(
+                        assets.sideUV(tile, block->remapIndex()),
+                        block->flipTopBottom(), block->flipLeftRight());
                     if (uv.u1 <= uv.u0) continue;
                     const float wallY = static_cast<float>(cellTop);
                     add(Vec3{side.x0, wallY, side.z0},
@@ -621,8 +643,10 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
                 const int neighbourTop = visibleHeight(side.nx, side.ny);
                 if (cellTop <= neighbourTop) continue;
                 for (int z = neighbourTop; z < cellTop; ++z) {
-                    const uint8_t tile = pickSideTile(cellX, cellY, n, z, side.dir);
-                    TileUV uv = tile ? assets.sideUV(tile) : fallbackWall;
+                    int remap = 0;
+                    const uint8_t tile =
+                        pickSideTile(cellX, cellY, n, z, side.dir, remap);
+                    TileUV uv = tile ? assets.sideUV(tile, remap) : fallbackWall;
                     if (uv.u1 <= uv.u0) uv = fallbackWall;
                     if (uv.u1 <= uv.u0) continue;
                     add(Vec3{side.x0, static_cast<float>(z), side.z0},
