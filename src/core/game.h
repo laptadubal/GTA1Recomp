@@ -216,6 +216,7 @@ private:
     void startGame();
     void beginPlay();
     void startSelectedGame();
+    std::string nextCityName() const;
     void resetCar();
     void resetMission();
     void updateOnFoot(float dt, InputManager& input, AudioManager& audio);
@@ -451,6 +452,7 @@ private:
     int collected_ = 0;
     int totalPickups_ = 10;
     int score_ = 0;
+    int pendingScore_ = 0;
     float missionTime_ = 0.0f;
     bool missionComplete_ = false;
     bool minimapEnabled_ = true;

@@ -1482,6 +1482,10 @@ void Game::beginPlay() {
         resetCar();
         resetMission();
     }
+    if (pendingScore_ > 0) {
+        score_ = pendingScore_;
+        pendingScore_ = 0;
+    }
     camera_.setZoom(config_.graphics.cameraZoom);
     camera_.setTilt(66.0f);
     camera_.snapTo(playerPosition());
@@ -1489,6 +1493,13 @@ void Game::beginPlay() {
     screen_ = Screen::Playing;
     pendingGameMusic_ = true;
     setStatus("FIND A RINGING PAYPHONE");
+}
+
+std::string Game::nextCityName() const {
+    const std::string city = assets_.cityName();
+    if (city == "NYC") return "SANB";
+    if (city == "SANB") return "MIAMI";
+    return "NYC";
 }
 
 void Game::startGame() { beginPlay(); }
@@ -2385,7 +2396,18 @@ void Game::updatePaused(InputManager& input, AudioManager& audio) {
 
 void Game::updateMissionComplete(InputManager& input, AudioManager& audio) {
     if (input.pressed(GameAction::MenuSelect) || input.mousePressed()) {
-        startGame();
+        // Move the campaign to the next city, keeping the player's cash.
+        pendingScore_ = score_ + 2500;
+        selectedCity_ = nextCityName();
+        std::string error;
+        if (!loadCity(selectedCity_, error)) {
+            setStatus("CANNOT LOAD " + selectedCity_);
+            screen_ = Screen::MainMenu;
+            return;
+        }
+        loadMissionData();
+        audio.stopMusic();
+        startCutscene(cutsceneForCity());
     } else if (input.pressed(GameAction::MenuBack)) {
         audio.stopMusic();
         menuMusicStarted_ = false;
@@ -5204,8 +5226,10 @@ void Game::renderMissionComplete(Renderer& renderer) {
     const MenuFrame frame = menuFrame();
     drawOriginalText(renderer, frame, "CITY COMPLETE", 320.0f, 150.0f, 1.05f,
                      1.0f, 0.86f, 0.3f, 1.0f, true);
-    drawOriginalText(renderer, frame, "EVERY JOB IN THE CITY IS DONE", 320.0f,
-                     200.0f, 0.55f, 0.85f, 0.9f, 0.95f, 1.0f, true);
+    const std::string finished =
+        "EVERY JOB IN " + cityDisplayName(assets_.cityName()) + " IS DONE";
+    drawOriginalText(renderer, frame, finished, 320.0f, 200.0f, 0.55f, 0.85f,
+                     0.9f, 0.95f, 1.0f, true);
     char buffer[96];
     std::snprintf(buffer, sizeof(buffer), "CASH  $%d", score_);
     drawHudText(renderer, missionFont_, buffer, frame.offsetX + 320.0f * frame.scale,
@@ -5216,9 +5240,13 @@ void Game::renderMissionComplete(Renderer& renderer) {
     drawHudText(renderer, missionFont_, buffer, frame.offsetX + 320.0f * frame.scale,
                 frame.offsetY + 276.0f * frame.scale, 0.52f * frame.scale,
                 0.85f, 0.9f, 0.95f, 1.0f, true, true);
-    drawOriginalText(renderer, frame, "ENTER / A  PLAY AGAIN", 320.0f, 348.0f,
-                     0.5f, 0.8f, 0.86f, 0.92f, 0.95f, true);
-    drawOriginalText(renderer, frame, "ESC / B  MAIN MENU", 320.0f, 372.0f,
+    const std::string travel =
+        "ENTER OR A  TRAVEL TO " + cityDisplayName(nextCityName());
+    drawOriginalText(renderer, frame, travel, 320.0f, 348.0f, 0.5f, 1.0f, 0.86f,
+                     0.35f, 1.0f, true);
+    drawOriginalText(renderer, frame, "2500 DOLLAR TRAVEL BONUS", 320.0f, 374.0f,
+                     0.44f, 0.75f, 0.9f, 0.6f, 0.95f, true);
+    drawOriginalText(renderer, frame, "ESC OR B  MAIN MENU", 320.0f, 400.0f,
                      0.46f, 0.68f, 0.74f, 0.84f, 0.9f, true);
     drawText(renderer, "v0.2.0", w - 18.0f * s, h - 20.0f * s, 0.75f * s,
              0.45f, 0.5f, 0.58f, 0.7f, false);
