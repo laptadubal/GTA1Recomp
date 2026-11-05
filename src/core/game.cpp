@@ -5270,27 +5270,35 @@ void Game::renderControls(Renderer& renderer) {
     const char* leftKeys[] = {"WASD", "SPACE", "F / E", "TAB", "P / ESC", "R"};
     const char* leftActions[] = {"DRIVE / WALK", "HANDBRAKE", "ENTER CAR",
                                  "CITY MAP",     "PAUSE",     "RESET CAR"};
-    const char* rightKeys[] = {"+ / -", "C", "Q", "M", "F1", "F3", "F12"};
+    const char* rightKeys[] = {"PLUS / MINUS", "C", "Q", "M", "F1", "F3", "F12"};
     const char* rightActions[] = {"ZOOM", "CAMERA", "WEAPON", "RADIO",
                                   "FULLSCREEN", "DEBUG", "SCREENSHOT"};
+    // The BIG menu fonts have no digit glyphs; draw the key/action columns with
+    // the mission font so F1/F12 and the slashes render correctly.
+    const float textScale = 0.52f * frame.scale;
+    auto row = [&](const std::string& text, float x, float y, bool key) {
+        drawHudText(renderer, missionFont_, text,
+                    frame.offsetX + x * frame.scale,
+                    frame.offsetY + y * frame.scale, textScale,
+                    key ? 1.0f : 0.86f, key ? 0.86f : 0.9f,
+                    key ? 0.4f : 0.96f, 0.95f, false, true);
+    };
     float y = 132.0f;
     for (int i = 0; i < 6; ++i) {
-        drawOriginalText(renderer, frame, leftKeys[i], 60.0f, y, 0.4f, 1.0f,
-                         0.86f, 0.4f, 1.0f, false);
-        drawOriginalText(renderer, frame, leftActions[i], 176.0f, y, 0.4f,
-                         0.86f, 0.9f, 0.96f, 0.95f, false);
+        row(leftKeys[i], 60.0f, y, true);
+        row(leftActions[i], 176.0f, y, false);
         y += 32.0f;
     }
     y = 132.0f;
     for (int i = 0; i < 7; ++i) {
-        drawOriginalText(renderer, frame, rightKeys[i], 330.0f, y, 0.4f, 1.0f,
-                         0.86f, 0.4f, 1.0f, false);
-        drawOriginalText(renderer, frame, rightActions[i], 408.0f, y, 0.4f,
-                         0.86f, 0.9f, 0.96f, 0.95f, false);
+        row(rightKeys[i], 330.0f, y, true);
+        row(rightActions[i], 408.0f, y, false);
         y += 32.0f;
     }
-    drawOriginalText(renderer, frame, "ESC / ENTER  BACK", 320.0f, 452.0f,
-                     0.46f, 0.75f, 0.8f, 0.86f, 0.92f, true);
+    drawHudText(renderer, missionFont_, "ESC / ENTER  BACK",
+                frame.offsetX + 320.0f * frame.scale,
+                frame.offsetY + 452.0f * frame.scale, 0.6f * frame.scale,
+                0.75f, 0.8f, 0.86f, 0.92f, true, true);
 }
 
 void Game::renderCityMap(Renderer& renderer) {
@@ -5418,8 +5426,10 @@ void Game::renderPause(Renderer& renderer) {
                          selected ? 1.0f : 0.7f, selected ? 1.0f : 0.7f,
                          selected ? 0.5f : 0.5f, 1.0f, false);
     }
-    drawOriginalText(renderer, frame, "ESC / P  RESUME", 320.0f, 420.0f, 0.42f,
-                     0.75f, 0.8f, 0.86f, 0.92f, true);
+    drawHudText(renderer, missionFont_, "ESC / P  RESUME",
+                frame.offsetX + 320.0f * frame.scale,
+                frame.offsetY + 414.0f * frame.scale, 0.55f * frame.scale,
+                0.75f, 0.8f, 0.86f, 0.92f, true, true);
 }
 
 void Game::renderMissionComplete(Renderer& renderer) {

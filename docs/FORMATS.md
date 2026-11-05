@@ -58,6 +58,11 @@ above it, which matches the original's flat-ground look.
 7  uint8  lid       roof/road texture index (1-based, 0 = none)
 ```
 
+`typeMapExt` carries the palette remap variant (`(ext >> 3) & 3`, selecting one
+of the four GRY remap rows), the mirror flags (`0x20` = flip top/bottom,
+`0x40` = flip left/right, used for side textures only) and the railway/traffic
+light bits.
+
 `typeMap` helpers:
 
 * bits 0..3: `upOk`, `downOk`, `leftOk`, `rightOk`
@@ -69,7 +74,10 @@ above it, which matches the original's flat-ground look.
 Road cells are normally a lid-only block with a road texture. A common pattern
 in `NYC.CMP` puts an invisible wall-less "crown" block above the road deck, so
 the engine scans down the column for the first known asphalt lid instead of
-assuming the topmost block is the driving surface.
+assuming the topmost block is the driving surface.  Roads alternate plain
+asphalt tiles and tiles that carry lane paint, so asphalt is classified by its
+dark neutral-grey tone rather than by the presence of yellow pixels; requiring
+lane paint marks half of every lane as non-road.
 
 ### Object record (16 bytes)
 

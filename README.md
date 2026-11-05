@@ -194,8 +194,11 @@ Menu navigation: `W`/`S` or `↑`/`↓`, `A`/`D` or `←`/`→` to change values
 --frames N          Frames before the screenshot (default: 8)
 ```
 
-Graphics/audio settings, the last window size and the selected city are saved
-to the SDL preference directory on exit (`config.ini`).
+Graphics/audio settings, the last window size, the selected city and the
+single-player campaign (including a CONTINUE entry in the main menu) are saved
+to the SDL preference directory (`config.ini`).  Set `clean_roads = true` there
+to replace the original lane tiles with plain asphalt plus procedural paint if
+you prefer a cleaner modern road look.
 
 ## Project layout
 
