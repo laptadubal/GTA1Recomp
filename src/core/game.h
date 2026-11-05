@@ -44,6 +44,12 @@ public:
     bool showScreen(const std::string& name);
     GameConfig& config() { return config_; }
 
+    // Persist / resume the campaign (stored in config.ini).
+    void saveProgress();
+    void saveProgressIfActive();
+    void continueCampaign();
+    bool hasSave() const { return config_.save.valid; }
+
 private:
     enum class Screen {
         Intro,
@@ -217,6 +223,9 @@ private:
     void beginPlay();
     void startSelectedGame();
     std::string nextCityName() const;
+    int mainMenuItemCount() const;
+    std::string mainMenuLabel(int index) const;
+    float mainMenuSpacing() const { return hasSave() ? 38.0f : 44.0f; }
     void resetCar();
     void resetMission();
     void updateOnFoot(float dt, InputManager& input, AudioManager& audio);

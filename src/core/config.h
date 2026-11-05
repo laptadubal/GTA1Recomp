@@ -23,6 +23,22 @@ struct AudioConfig {
     bool music = true;
 };
 
+// Saved single-player campaign, written to config.ini.  A modern convenience:
+// the DOS original had no save games.
+struct SaveGame {
+    bool valid = false;
+    std::string city = "NYC";
+    int mission = 0;
+    int score = 0;
+    float health = 100.0f;
+    float armor = 0.0f;
+    int weapon = 0;
+    int ammo[4] = {40, 0, 0, 0};
+    float x = 0.0f, y = 0.0f, z = 0.0f;
+    float yaw = 0.0f;
+    bool inCar = false;
+};
+
 struct GameConfig {
     GraphicsConfig graphics;
     AudioConfig audio;
@@ -30,6 +46,7 @@ struct GameConfig {
     std::string city = "NYC";
     int carIndex = 0;
     bool showDebug = false;
+    SaveGame save;
 };
 
 GameConfig defaultConfig();

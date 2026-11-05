@@ -104,6 +104,22 @@ bool loadConfig(const std::string& path, GameConfig& config, std::string& error)
         else if (key == "city") config.city = value;
         else if (key == "car") config.carIndex = parseInt(value, config.carIndex);
         else if (key == "debug") parseBool(value, config.showDebug);
+        else if (key == "save_valid") parseBool(value, config.save.valid);
+        else if (key == "save_city") config.save.city = value;
+        else if (key == "save_mission") config.save.mission = parseInt(value, config.save.mission);
+        else if (key == "save_score") config.save.score = parseInt(value, config.save.score);
+        else if (key == "save_health") config.save.health = parseFloat(value, config.save.health);
+        else if (key == "save_armor") config.save.armor = parseFloat(value, config.save.armor);
+        else if (key == "save_weapon") config.save.weapon = parseInt(value, config.save.weapon);
+        else if (key == "save_ammo0") config.save.ammo[0] = parseInt(value, config.save.ammo[0]);
+        else if (key == "save_ammo1") config.save.ammo[1] = parseInt(value, config.save.ammo[1]);
+        else if (key == "save_ammo2") config.save.ammo[2] = parseInt(value, config.save.ammo[2]);
+        else if (key == "save_ammo3") config.save.ammo[3] = parseInt(value, config.save.ammo[3]);
+        else if (key == "save_x") config.save.x = parseFloat(value, config.save.x);
+        else if (key == "save_y") config.save.y = parseFloat(value, config.save.y);
+        else if (key == "save_z") config.save.z = parseFloat(value, config.save.z);
+        else if (key == "save_yaw") config.save.yaw = parseFloat(value, config.save.yaw);
+        else if (key == "save_in_car") parseBool(value, config.save.inCar);
     }
 
     config.graphics.width = std::max(320, config.graphics.width);
@@ -143,6 +159,23 @@ bool saveConfig(const std::string& path, const GameConfig& config,
     file << "city = " << config.city << "\n";
     file << "car = " << config.carIndex << "\n";
     file << "debug = " << (config.showDebug ? "true" : "false") << "\n";
+    file << "save_valid = " << (config.save.valid ? "true" : "false") << "\n";
+    if (config.save.valid) {
+        file << "save_city = " << config.save.city << "\n";
+        file << "save_mission = " << config.save.mission << "\n";
+        file << "save_score = " << config.save.score << "\n";
+        file << "save_health = " << config.save.health << "\n";
+        file << "save_armor = " << config.save.armor << "\n";
+        file << "save_weapon = " << config.save.weapon << "\n";
+        for (int i = 0; i < 4; ++i) {
+            file << "save_ammo" << i << " = " << config.save.ammo[i] << "\n";
+        }
+        file << "save_x = " << config.save.x << "\n";
+        file << "save_y = " << config.save.y << "\n";
+        file << "save_z = " << config.save.z << "\n";
+        file << "save_yaw = " << config.save.yaw << "\n";
+        file << "save_in_car = " << (config.save.inCar ? "true" : "false") << "\n";
+    }
     if (!config.dataDir.empty()) file << "data_dir = " << config.dataDir << "\n";
     return static_cast<bool>(file);
 }

@@ -1242,6 +1242,7 @@ void Game::completeMission(bool success, AudioManager& audio) {
         if (missionIndex_ >= static_cast<int>(missions_.size())) {
             missionComplete_ = true;
         }
+        saveProgress();
     } else {
         audio.playCrashSound();
         resultText_ = "MISSION FAILED";
@@ -1502,6 +1503,103 @@ std::string Game::nextCityName() const {
     return "NYC";
 }
 
+void Game::saveProgress() {
+    SaveGame& save = config_.save;
+    save.valid = true;
+    save.city = assets_.cityName().empty() ? selectedCity_ : assets_.cityName();
+    save.mission = missionIndex_;
+    save.score = score_;
+    save.health = playerHealth_;
+    save.armor = playerArmor_;
+    save.weapon = static_cast<int>(weapon_);
+    for (int i = 0; i < 4; ++i) save.ammo[i] = ammo_[i];
+    const Vec3 pos = playerPosition();
+    save.x = pos.x;
+    save.y = pos.y;
+    save.z = pos.z;
+    save.yaw = inCar_ ? vehicle_.yaw() : footYaw_;
+    save.inCar = inCar_;
+}
+
+void Game::saveProgressIfActive() {
+    if (screen_ == Screen::Playing || screen_ == Screen::Paused ||
+        screen_ == Screen::PausedSettings || screen_ == Screen::CityMap) {
+        saveProgress();
+    }
+}
+
+void Game::continueCampaign() {
+    if (!config_.save.valid) {
+        startSelectedGame();
+        return;
+    }
+    const SaveGame save = config_.save;
+    selectedCity_ = save.city.empty() ? "NYC" : save.city;
+    std::string error;
+    if (selectedCity_ != assets_.cityName()) {
+        if (!loadCity(selectedCity_, error)) {
+            setStatus("CANNOT LOAD SAVE");
+            config_.save.valid = false;
+            screen_ = Screen::MainMenu;
+            return;
+        }
+        loadMissionData();
+    }
+    beginPlay();
+    missionIndex_ = std::clamp(save.mission, 0, std::max(0, static_cast<int>(missions_.size()) - 1));
+    missionState_ = MissionState::Idle;
+    missionComplete_ = false;
+    briefingText_.clear();
+    resultText_.clear();
+    score_ = save.score;
+    playerHealth_ = std::clamp(save.health, 1.0f, 100.0f);
+    playerArmor_ = std::clamp(save.armor, 0.0f, 100.0f);
+    weapon_ = static_cast<WeaponType>(
+        std::clamp(save.weapon, 0, static_cast<int>(WeaponType::Count) - 1));
+    for (int i = 0; i < 4; ++i) ammo_[i] = std::max(0, save.ammo[i]);
+    if (ammo_[static_cast<int>(weapon_)] <= 0 &&
+        ammo_[static_cast<int>(WeaponType::Pistol)] <= 0) {
+        ammo_[static_cast<int>(WeaponType::Pistol)] = 20;
+        weapon_ = WeaponType::Pistol;
+    }
+    const Vec3 pos{save.x, save.y, save.z};
+    inCar_ = save.inCar;
+    if (inCar_) {
+        vehicle_.reset(pos);
+        vehicle_.setYaw(save.yaw);
+        footPos_ = pos;
+    } else {
+        footPos_ = pos;
+        footYaw_ = save.yaw;
+    }
+    camera_.snapTo(playerPosition());
+    pickNearestPhone();
+    setObjective("FIND A RINGING PAYPHONE");
+    setStatus("CAMPAIGN RESUMED");
+}
+
+int Game::mainMenuItemCount() const { return hasSave() ? 6 : 5; }
+
+std::string Game::mainMenuLabel(int index) const {
+    if (hasSave()) {
+        switch (index) {
+        case 0: return "CONTINUE";
+        case 1: return "NEW GAME";
+        case 2: return "CITY";
+        case 3: return "OPTIONS";
+        case 4: return "CONTROLS";
+        default: return "QUIT";
+        }
+    }
+    switch (index) {
+    case 0: return "PLAY";
+    case 1: return "CITY";
+    case 2: return "OPTIONS";
+    case 3: return "CONTROLS";
+    default: return "QUIT";
+    }
+}
+
 void Game::startGame() { beginPlay(); }
 
 void Game::startSelectedGame() {
@@ -1570,6 +1668,10 @@ bool Game::showScreen(const std::string& name) {
     if (name == "mission") {
         if (screen_ != Screen::Playing) startGame();
         screen_ = Screen::MissionComplete;
+        return true;
+    }
+    if (name == "continue") {
+        continueCampaign();
         return true;
     }
     if (name == "game") {
@@ -1792,7 +1894,9 @@ void Game::updateMainMenu(float dt, InputManager& input, AudioManager& audio) {
         playMusicTrack(0, audio);
         menuMusicStarted_ = true;
     }
-    const int count = 5;
+    const int count = mainMenuItemCount();
+    const int cityRow = hasSave() ? 2 : 1;
+    const float spacing = mainMenuSpacing();
     if (input.pressed(GameAction::MenuUp)) {
         menuIndex_ = (menuIndex_ + count - 1) % count;
     }
@@ -1814,7 +1918,7 @@ void Game::updateMainMenu(float dt, InputManager& input, AudioManager& audio) {
         }
     }
 
-    if (menuIndex_ == 1) {
+    if (menuIndex_ == cityRow) {
         static const char* cities[] = {"NYC", "MIAMI", "SANB"};
         auto current = std::find(std::begin(cities), std::end(cities), selectedCity_);
         int index = current == std::end(cities)
@@ -1830,33 +1934,28 @@ void Game::updateMainMenu(float dt, InputManager& input, AudioManager& audio) {
 
     if (!activate) return;
     audio.playUiClick();
-    switch (menuIndex_) {
-    case 0:
+    const std::string label = mainMenuLabel(menuIndex_);
+    if (label == "CONTINUE") {
+        continueCampaign();
+    } else if (label == "PLAY" || label == "NEW GAME") {
+        config_.save.valid = false;
         startSelectedGame();
-        break;
-    case 1: {
+    } else if (label == "CITY") {
         static const char* cities[] = {"NYC", "MIAMI", "SANB"};
         auto current = std::find(std::begin(cities), std::end(cities), selectedCity_);
         int index = current == std::end(cities)
                         ? 0
                         : static_cast<int>(current - std::begin(cities));
         selectedCity_ = cities[(index + 1) % 3];
-        break;
-    }
-    case 2:
+    } else if (label == "OPTIONS") {
         settingsReturn_ = Screen::MainMenu;
         settingsIndex_ = 0;
         screen_ = Screen::Settings;
-        break;
-    case 3:
+    } else if (label == "CONTROLS") {
         settingsReturn_ = Screen::MainMenu;
         screen_ = Screen::Controls;
-        break;
-    case 4:
+    } else if (label == "QUIT") {
         quit_ = true;
-        break;
-    default:
-        break;
     }
 }
 
@@ -2156,6 +2255,7 @@ void Game::updatePlaying(float dt, InputManager& input, AudioManager& audio) {
                    input.pressed(GameAction::MenuBack))) {
         screen_ = Screen::Paused;
         menuIndex_ = 0;
+        saveProgress();
         audio.setPaused(true);
         return;
     }
@@ -2381,6 +2481,7 @@ void Game::updatePaused(InputManager& input, AudioManager& audio) {
         screen_ = Screen::PausedSettings;
         break;
     case 3:
+        saveProgress();
         audio.stopMusic();
         menuMusicStarted_ = false;
         screen_ = Screen::MainMenu;
@@ -4863,18 +4964,21 @@ void Game::renderMainMenu(Renderer& renderer) {
 
     if (originalAssets_) {
         const MenuFrame frame = drawOriginalBackdrop(renderer, true);
-        const char* labels[5] = {"PLAY", "CITY", "OPTIONS", "CONTROLS", "QUIT"};
+        const int itemCount = mainMenuItemCount();
+        const int cityRow = hasSave() ? 2 : 1;
         const float itemX = 250.0f;
-        const float firstY = 214.0f;
-        const float spacing = 44.0f;
+        const float firstY = hasSave() ? 192.0f : 214.0f;
+        const float spacing = mainMenuSpacing();
 
         // Subtle dark strip keeps the gold text readable over the rusty art.
         drawRect(renderer, frame.offsetX + 138.0f * frame.scale,
                  frame.offsetY + 194.0f * frame.scale,
-                 386.0f * frame.scale, 236.0f * frame.scale, 0.0f, 0.0f, 0.0f,
+                 386.0f * frame.scale,
+                 (hasSave() ? 262.0f : 236.0f) * frame.scale, 0.0f, 0.0f, 0.0f,
                  0.22f);
 
-        for (int i = 0; i < 5; ++i) {
+        for (int i = 0; i < itemCount; ++i) {
+            const std::string label = mainMenuLabel(i);
             const float y = firstY + i * spacing;
             const bool selected = menuIndex_ == i;
             if (selected) {
@@ -4888,7 +4992,7 @@ void Game::renderMainMenu(Renderer& renderer) {
                          0.22f, 1.0f);
                 const float labelWidth =
                     menuFont_.valid()
-                        ? menuFont_.measure(labels[i], 0.85f * frame.scale)
+                        ? menuFont_.measure(label, 0.85f * frame.scale)
                         : 200.0f * frame.scale;
                 drawRect(renderer, frame.offsetX + itemX * frame.scale,
                          frame.offsetY + (y + 30.0f) * frame.scale,
@@ -4905,11 +5009,11 @@ void Game::renderMainMenu(Renderer& renderer) {
                         renderer.width(), renderer.height());
                 }
             }
-            drawOriginalText(renderer, frame, labels[i], itemX, y, 0.85f,
+            drawOriginalText(renderer, frame, label, itemX, y, 0.85f,
                              selected ? 1.0f : 0.66f,
                              selected ? 1.0f : 0.66f,
                              selected ? 0.72f : 0.45f, 1.0f, false);
-            if (i == 1) {
+            if (i == cityRow) {
                 const std::string city = cityDisplayName(selectedCity_);
                 const std::string value =
                     selected ? "< " + city + " >" : city;
@@ -4918,18 +5022,34 @@ void Game::renderMainMenu(Renderer& renderer) {
             }
         }
 
+        // The BIG fonts have no digit glyphs, so anything with numbers goes
+        // through F_MTEXT (the mission font), which has the full ASCII set.
+        const float textScale = 0.5f * frame.scale;
         if (statusTimer_ > 0.0f && !statusMessage_.empty()) {
-            drawOriginalText(renderer, frame, statusMessage_, 320.0f, 432.0f,
-                             0.5f, 1.0f, 0.7f, 0.28f, 0.95f, true);
+            drawHudText(renderer, missionFont_, statusMessage_,
+                        frame.offsetX + 320.0f * frame.scale,
+                        frame.offsetY + 428.0f * frame.scale, textScale, 1.0f,
+                        0.7f, 0.28f, 0.95f, true, true);
+        } else if (hasSave()) {
+            char summary[80];
+            std::snprintf(summary, sizeof(summary),
+                          "SAVED CAMPAIGN   JOB %02d OF 22   %d DOLLARS",
+                          config_.save.mission + 1, config_.save.score);
+            drawHudText(renderer, missionFont_, summary,
+                        frame.offsetX + 320.0f * frame.scale,
+                        frame.offsetY + 428.0f * frame.scale, textScale * 0.9f,
+                        0.78f, 0.88f, 0.62f, 0.95f, true, true);
         }
-        drawOriginalText(renderer, frame,
-                         "UP / DOWN  SELECT      ENTER / A  CONFIRM      LEFT / RIGHT  CHANGE",
-                         320.0f, 452.0f, 0.42f, 0.78f, 0.82f, 0.88f, 0.92f,
-                         true);
-        drawOriginalText(renderer, frame,
-                         "F1 FULLSCREEN    F2 FXAA    F3 DEBUG    F4 MINIMAP",
-                         320.0f, 466.0f, 0.38f, 0.6f, 0.66f, 0.74f, 0.85f,
-                         true);
+        drawHudText(renderer, missionFont_,
+                    "UP / DOWN  SELECT     ENTER  CONFIRM     LEFT / RIGHT  CHANGE",
+                    frame.offsetX + 320.0f * frame.scale,
+                    frame.offsetY + 448.0f * frame.scale, textScale * 0.85f,
+                    0.78f, 0.82f, 0.88f, 0.92f, true, true);
+        drawHudText(renderer, missionFont_,
+                    "F1 FULLSCREEN    F2 FXAA    F3 DEBUG    F4 MINIMAP",
+                    frame.offsetX + 320.0f * frame.scale,
+                    frame.offsetY + 464.0f * frame.scale, textScale * 0.8f,
+                    0.6f, 0.66f, 0.74f, 0.85f, true, true);
         drawText(renderer, "v0.2.0", w - 18.0f * s, h - 20.0f * s, 0.75f * s,
                  0.45f, 0.5f, 0.58f, 0.7f, false);
         return;
@@ -4949,15 +5069,17 @@ void Game::renderMainMenu(Renderer& renderer) {
     drawRect(renderer, panelX - 16.0f * s, panelY, width + 32.0f * s,
              menuItemSpacing() * 4.6f + 20.0f * s, 0.0f, 0.0f, 0.0f, 0.45f);
 
-    const char* labels[5] = {"PLAY", "CITY", "OPTIONS", "CONTROLS", "QUIT"};
-    for (int i = 0; i < 5; ++i) {
+    const int itemCount = mainMenuItemCount();
+    const int cityRow = hasSave() ? 2 : 1;
+    for (int i = 0; i < itemCount; ++i) {
+        const std::string label = mainMenuLabel(i);
         std::string value;
-        if (i == 1) value = cityDisplayName(selectedCity_);
-        if (i == 1) {
-            drawMenuItem(renderer, i, 5, 0.55f, labels[i],
+        if (i == cityRow) value = cityDisplayName(selectedCity_);
+        if (i == cityRow) {
+            drawMenuItem(renderer, i, itemCount, 0.55f, label,
                          "< " + value + " >", menuIndex_ == i, true);
         } else {
-            drawMenuItem(renderer, i, 5, 0.55f, labels[i], value,
+            drawMenuItem(renderer, i, itemCount, 0.55f, label, value,
                          menuIndex_ == i, false);
         }
     }

@@ -288,6 +288,7 @@ int main(int argc, char** argv) {
         if (input.quitRequested() || game.quitRequested()) running = false;
     }
 
+    game.saveProgressIfActive();
     game.config().graphics.fullscreen = renderer.fullscreen();
     SDL_GetWindowSize(renderer.window(), &game.config().graphics.width,
                       &game.config().graphics.height);
