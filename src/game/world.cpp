@@ -126,19 +126,31 @@ Vec3 World::findSpawn(int preferredX, int preferredY) const {
 
 void World::addQuad(std::vector<CityVertex>& v, std::vector<uint32_t>& idx,
                     const Vec3& p0, const Vec3& p1, const Vec3& p2, const Vec3& p3,
-                    const TileUV& uv, float r, float g, float b, bool transparent) {
+                    const TileUV& uv, float r, float g, float b, bool transparent,
+                    bool faceUp) {
     (void)transparent;
     const uint32_t base = static_cast<uint32_t>(v.size());
     v.push_back({p0.x, p0.y, p0.z, uv.u0, uv.v1, r, g, b, 1.0f});
     v.push_back({p1.x, p1.y, p1.z, uv.u1, uv.v1, r, g, b, 1.0f});
     v.push_back({p2.x, p2.y, p2.z, uv.u1, uv.v0, r, g, b, 1.0f});
     v.push_back({p3.x, p3.y, p3.z, uv.u0, uv.v0, r, g, b, 1.0f});
-    idx.push_back(base + 0);
-    idx.push_back(base + 1);
-    idx.push_back(base + 2);
-    idx.push_back(base + 0);
-    idx.push_back(base + 2);
-    idx.push_back(base + 3);
+    if (faceUp) {
+        // Horizontal quads are authored clockwise seen from above; reverse
+        // them so the normal points up and back-face culling keeps them.
+        idx.push_back(base + 0);
+        idx.push_back(base + 2);
+        idx.push_back(base + 1);
+        idx.push_back(base + 0);
+        idx.push_back(base + 3);
+        idx.push_back(base + 2);
+    } else {
+        idx.push_back(base + 0);
+        idx.push_back(base + 1);
+        idx.push_back(base + 2);
+        idx.push_back(base + 0);
+        idx.push_back(base + 2);
+        idx.push_back(base + 3);
+    }
 }
 
 bool World::build(AssetManager& assets, std::string& error) {
@@ -413,9 +425,9 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
 
     auto add = [&](const Vec3& p0, const Vec3& p1, const Vec3& p2,
                    const Vec3& p3, const TileUV& uv, float r, float g, float b,
-                   bool transparent) {
+                   bool transparent, bool faceUp = false) {
         addQuad(vertices, transparent ? alphaIndex : opaqueIndex, p0, p1, p2, p3,
-                uv, r, g, b, transparent);
+                uv, r, g, b, transparent, faceUp);
     };
 
     // Horizontal map tiles are rotated in 90-degree steps by the two rotation
@@ -442,12 +454,14 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
             vertices.push_back({p.x, p.y, p.z, us[corner], vs[corner], 1.0f,
                                 1.0f, 1.0f, 1.0f});
         }
+        // Horizontal face: reverse the winding so the normal points up for
+        // back-face culling.
         index.push_back(base + 0);
+        index.push_back(base + 2);
         index.push_back(base + 1);
-        index.push_back(base + 2);
         index.push_back(base + 0);
-        index.push_back(base + 2);
         index.push_back(base + 3);
+        index.push_back(base + 2);
     };
 
     auto blockAtOrNull = [&](int x, int y, int z) -> const MapBlock* {
@@ -538,7 +552,7 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
     auto paintRect = [&](float ax, float az, float bx, float bz, float y,
                          float r, float g, float b) {
         add(Vec3{ax, y, az}, Vec3{bx, y, az}, Vec3{bx, y, bz},
-            Vec3{ax, y, bz}, assets_->whiteUV(), r, g, b, false);
+            Vec3{ax, y, bz}, assets_->whiteUV(), r, g, b, false, true);
     };
     auto addRoadPaint = [&](int cx, int cz, float lidY) {
         const float x0 = static_cast<float>(cx);

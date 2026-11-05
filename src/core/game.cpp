@@ -2793,6 +2793,13 @@ void Game::drawWorld(Renderer& renderer) {
                chunk.minZ <= center.z + halfExtent;
     };
 
+    // Back-face culling keeps the far side of fences, railings and walls from
+    // being drawn through the near side.  Without it every two-sided decal
+    // turns into a forest of red pickets.
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
+    glFrontFace(GL_CCW);
+
     // Pass 1: opaque city geometry.  The alpha test mode 2 ignores the
     // palette index 0 colour key so black pixels of opaque tiles stay black.
     shader.setInt("uAlphaTest", 2);
@@ -2825,6 +2832,7 @@ void Game::drawWorld(Renderer& renderer) {
     }
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
+    glDisable(GL_CULL_FACE);
     glBindVertexArray(0);
 }
 

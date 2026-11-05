@@ -51,6 +51,11 @@ Chunk geometry contains:
   classified by flood-filling empty regions from the map border and by the
   nearest real water tile.
 
+City geometry is drawn with back-face culling: horizontal lids are wound to
+face up, wall quads face outwards, so a two-sided fence decal only draws the
+side facing the camera.  Without culling every fence, railing and sign doubles
+up and the streets turn into a forest of overlapping quads.
+
 Car sprites are alpha-tested billboards lying on the ground plane, rotated by
 the vehicle yaw. The HUD is drawn in screen space with the same shader using a
 built-in 5×7 bitmap font and untextured rectangles.

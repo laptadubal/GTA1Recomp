@@ -75,7 +75,8 @@ private:
 
     void addQuad(std::vector<CityVertex>& v, std::vector<uint32_t>& idx,
                  const Vec3& p0, const Vec3& p1, const Vec3& p2, const Vec3& p3,
-                 const TileUV& uv, float r, float g, float b, bool transparent);
+                 const TileUV& uv, float r, float g, float b, bool transparent,
+                 bool faceUp = false);
 };
 
 } // namespace gta
