@@ -143,10 +143,50 @@ bool World::build(AssetManager& assets, std::string& error) {
     }
     baseHeight_ = static_cast<uint8_t>(baseHeight);
 
-    // Cells that only carry a transparent decal (fence, sign, road paint)
-    // have no surface texture of their own.  Use the nearest authored tile as
-    // their base instead of inventing water/grass, which used to leave blue
-    // and green squares inside blocks.
+    // Columns that only carry a transparent decal (fence, sign, road paint)
+    // have no surface texture of their own.  Use the most common texture of
+    // their immediate neighbours as the base; this keeps crosswalks on
+    // asphalt and fences on grass instead of leaving dark holes or blue
+    // squares in the middle of streets.
+    for (int y = 0; y < CityMap::kSize; ++y) {
+        for (int x = 0; x < CityMap::kSize; ++x) {
+            const size_t index = static_cast<size_t>(y * CityMap::kSize + x);
+            if (surface_[index] != 0) continue;
+            if (map.blockCount(x, y) <= 0) continue;
+            int counts[256] = {0};
+            int bestLid = 0;
+            int bestCount = 0;
+            uint8_t bestRot = 0;
+            for (int radius = 1; radius <= 3 && bestLid == 0; ++radius) {
+                for (int dy = -radius; dy <= radius; ++dy) {
+                    for (int dx = -radius; dx <= radius; ++dx) {
+                        if (std::max(std::abs(dx), std::abs(dy)) != radius)
+                            continue;
+                        const int nx = x + dx;
+                        const int ny = y + dy;
+                        if (nx < 0 || ny < 0 || nx >= CityMap::kSize ||
+                            ny >= CityMap::kSize)
+                            continue;
+                        const size_t ni =
+                            static_cast<size_t>(ny * CityMap::kSize + nx);
+                        const int lid = baseLid_[ni];
+                        if (lid == 0) continue;
+                        const int count = ++counts[lid];
+                        if (count > bestCount) {
+                            bestCount = count;
+                            bestLid = lid;
+                            bestRot = baseRot_[ni];
+                        }
+                    }
+                }
+            }
+            baseLid_[index] = static_cast<uint8_t>(bestLid);
+            baseRot_[index] = bestRot;
+        }
+    }
+
+    // Remaining empty cells (open sea, park lakes) inherit the closest base
+    // so the preview/floor code has a sensible texture for the coastline.
     {
         std::vector<uint8_t> visited(static_cast<size_t>(cells), 0);
         std::vector<int> queue;
@@ -396,19 +436,10 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
                 TileUV floorUV;
                 int floorRotation = 0;
                 if (n > 0) {
-                    // A decal-only column: put its base directly underneath
-                    // the decals (at the lowest authored level) and borrow the
-                    // nearest real surface texture.  Using water/grass here
-                    // produced blue and green squares inside city blocks.
-                    int lowest = n - 1;
-                    for (int z = 0; z < n; ++z) {
-                        const MapBlock* b = blockAtOrNull(cellX, cellY, z);
-                        if (b && !b->isAir()) {
-                            lowest = z;
-                            break;
-                        }
-                    }
-                    floorY = lowest;
+                    // A decal-only column: keep its base at street level and
+                    // borrow the most common neighbouring surface texture, so
+                    // a crosswalk sits on asphalt and a fence sits on grass.
+                    floorY = static_cast<int>(baseHeight_);
                     const size_t index =
                         static_cast<size_t>(cellY * CityMap::kSize + cellX);
                     if (baseLid_[index] != 0) {
@@ -423,7 +454,8 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
                 if (floorUV.u1 <= floorUV.u0) floorUV = fallbackRoof;
                 if (floorUV.u1 <= floorUV.u0) floorUV = fallbackRoad;
                 if (floorUV.u1 > floorUV.u0) {
-                    const float y = static_cast<float>(floorY);
+                    const float y = static_cast<float>(floorY) -
+                                    (n > 0 ? 0.01f : 0.0f);
                     addLid(Vec3{x0, y, z0}, Vec3{x1, y, z0},
                            Vec3{x1, y, z1}, Vec3{x0, y, z1}, floorUV,
                            floorRotation, false);
@@ -447,8 +479,15 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
                     // Only draw textures that actually exist in the archive;
                     // inventing a fallback here hides the real city layout.
                     if (uv.u1 > uv.u0) {
-                        addLid(Vec3{x0, y1, z0}, Vec3{x1, y1, z0},
-                               Vec3{x1, y1, z1}, Vec3{x0, y1, z1}, uv,
+                        const bool decalOnly =
+                            n > 0 &&
+                            surface_[cellY * CityMap::kSize + cellX] == 0;
+                        const float lidY =
+                            (flat && decalOnly)
+                                ? std::max(y1, static_cast<float>(baseHeight_))
+                                : y1;
+                        addLid(Vec3{x0, lidY, z0}, Vec3{x1, lidY, z0},
+                               Vec3{x1, lidY, z1}, Vec3{x0, lidY, z1}, uv,
                                static_cast<int>(block->rotation()), flat);
                     }
                 }
