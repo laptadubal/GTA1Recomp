@@ -1,0 +1,31 @@
+# Build output
+build/
+build-*/
+compile_commands.json
+
+# Packaged macOS application (rebuild with tools/package_macos.sh)
+dist/
+GTA Recomp.app
+
+# Extracted game data / disc images (never redistribute these)
+game_data/
+iso/
+*.rar
+*.mdf
+*.mds
+*.iso
+
+# Local captures and research artefacts
+screenshot_*.bmp
+*.bmp
+tools/*.png
+
+# Third-party reference sources and unrelated local scratch space
+tools/OpenGTA/
+.probe2/
+__pycache__/
+tools/__pycache__/
+
+# Editor/OS noise
+.DS_Store
+*.swp
