@@ -60,6 +60,34 @@ int main() {
     }
     check(nonAir > 100000, "city map contains a populated world");
 
+    // The stored column value is the number of empty levels, so nearly every
+    // cell must have a visible top.  Reading it as a block count truncates
+    // ~40% of the city (the bug that made roads and roofs come from the
+    // wrong level).
+    int withTop = 0;
+    int tall = 0;
+    int maxTop = 0;
+    for (int y = 0; y < 256; ++y) {
+        for (int x = 0; x < 256; ++x) {
+            const int count = map.blockCount(x, y);
+            int top = 0;
+            for (int z = count - 1; z >= 0; --z) {
+                const gta::MapBlock* block = map.blockAt(x, y, z);
+                if (!block || block->isAir() || block->isFlat() ||
+                    block->lid == 0)
+                    continue;
+                top = z + 1;
+                break;
+            }
+            if (top > 0) ++withTop;
+            if (top >= 5) ++tall;
+            if (top > maxTop) maxTop = top;
+        }
+    }
+    check(withTop > 64000, "almost every cell has a visible surface");
+    check(tall > 5000, "the city has real multi-storey buildings");
+    check(maxTop == 6, "column heights reach the six-level maximum");
+
     gta::GryFile gry;
     if (!gta::loadGry(gryPath, gry, error)) {
         std::fprintf(stderr, "FAIL: %s\n", error.c_str());

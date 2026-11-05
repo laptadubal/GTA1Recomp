@@ -34,7 +34,11 @@ texture. The render target can follow a render-scale (`--scale`) independently
 of the window size.
 
 The city is split into 16×16 cell chunks. Each chunk is an indexed VAO with
-position, UV and RGBA vertex attributes. Chunk geometry contains:
+position, UV and RGBA vertex attributes.  Water, land, pavements and bridge
+decks are rendered flat at the city's base height (a one-unit CMP step is a
+kerb, not a wall); only columns that rise above that are extruded into
+buildings, with continuous façades from the neighbouring ground to the roof.
+Chunk geometry contains:
 
 * one roof quad per authored lid block, at its own level (so elevated decks
   under structural blocks render correctly); horizontal lids are sampled with
@@ -59,9 +63,11 @@ terrain fill. `roadSurface()` scans down the column for the first known asphalt
 lid and returns the top face height of that block. This handles the structural
 "crown" blocks that GTA places above many street cells.
 
-`Vehicle` probes its four corners against `isDrivable()`, rejects level changes
-larger than one unit and slides/stops on collisions. Its sprite height follows
-the road surface.
+`World::roadSurface()` is the strict road network used by traffic, mission and
+pickup placement.  `World::isPassable()` is the wider driving surface used by
+the player's car and on-foot movement: roads, pavements, parks and bridge decks
+are passable, buildings and water are not.  `Vehicle` probes its four corners
+against it and slides/stops on collisions.
 
 ## Input
 

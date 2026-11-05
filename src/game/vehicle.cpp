@@ -78,12 +78,14 @@ void Vehicle::update(float dt, const VehicleControls& controls, const World& wor
                           static_cast<int>(std::floor(pos_.z)));
 
     auto surfaceAt = [&](const Vec3& p) {
-        return world.roadSurface(static_cast<int>(std::floor(p.x)),
-                                 static_cast<int>(std::floor(p.z)));
+        const int cx = static_cast<int>(std::floor(p.x));
+        const int cz = static_cast<int>(std::floor(p.z));
+        const int road = world.roadSurface(cx, cz);
+        return road > 0 ? road : world.surfaceHeight(cx, cz);
     };
     auto canMoveTo = [&](const Vec3& candidate) {
+        if (!world.isPassable(candidate.x, candidate.z)) return false;
         const int surface = surfaceAt(candidate);
-        if (surface <= 0) return false;
         if (currentSurface > 0 && std::abs(surface - currentSurface) > 1)
             return false;
         const float sx = std::cos(yaw_) * kRadius;
@@ -97,7 +99,7 @@ void Vehicle::update(float dt, const VehicleControls& controls, const World& wor
             {candidate.x - px - sx, candidate.z - pz - sz},
         };
         for (const Vec2& p : corners) {
-            if (!world.isDrivable(p.x, p.y)) return false;
+            if (!world.isPassable(p.x, p.y)) return false;
         }
         return true;
     };
@@ -130,7 +132,9 @@ void Vehicle::update(float dt, const VehicleControls& controls, const World& wor
     const int ground =
         world.roadSurface(static_cast<int>(std::floor(pos_.x)),
                           static_cast<int>(std::floor(pos_.z)));
-    pos_.y = static_cast<float>(std::max(1, ground)) + bob_;
+    pos_.y = static_cast<float>(ground > 0 ? ground : world.surfaceHeight(
+                  static_cast<int>(std::floor(pos_.x)),
+                  static_cast<int>(std::floor(pos_.z)))) + bob_;
 }
 
 } // namespace gta

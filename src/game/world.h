@@ -49,6 +49,10 @@ public:
     int visualHeight(int surface) const;
     int baseHeight() const { return baseHeight_; }
     bool isDrivable(float worldX, float worldZ) const;
+    // Ground the player's car can physically drive over: roads, pavements,
+    // grass and bridge decks, but not buildings or open water.  GTA1 lets you
+    // bump over kerbs, so this is deliberately wider than roadSurface().
+    bool isPassable(float worldX, float worldZ) const;
     Vec3 findSpawn(int preferredX = 108, int preferredY = 108) const;
 
     const std::vector<CityChunk>& chunks() const { return chunks_; }

@@ -52,6 +52,28 @@ int World::roadSurface(int cellX, int cellY) const {
     return 0;
 }
 
+bool World::isPassable(float worldX, float worldZ) const {
+    if (!assets_) return false;
+    const int cx = static_cast<int>(std::floor(worldX));
+    const int cy = static_cast<int>(std::floor(worldZ));
+    if (cx < 0 || cy < 0 || cx >= CityMap::kSize || cy >= CityMap::kSize)
+        return false;
+    const CityMap& map = assets_->map();
+    const int n = map.blockCount(cx, cy);
+    if (n <= 0) return false;
+    const int surface = surface_[cy * CityMap::kSize + cx];
+    if (surface <= 0) return true; // decal-only ground cell
+    // Buildings block the car; water does not carry it.
+    if (visualHeight(surface) > static_cast<int>(baseHeight_)) return false;
+    for (int z = n - 1; z >= 0; --z) {
+        const MapBlock* block = map.blockAt(cx, cy, z);
+        if (!block || block->isAir() || block->isFlat() || block->lid == 0)
+            continue;
+        return !assets_->isWaterTile(block->lid);
+    }
+    return true;
+}
+
 bool World::isDrivable(float worldX, float worldZ) const {
     const int cx = static_cast<int>(std::floor(worldX));
     const int cy = static_cast<int>(std::floor(worldZ));

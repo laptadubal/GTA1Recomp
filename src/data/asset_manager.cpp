@@ -121,6 +121,10 @@ void AssetManager::classifyRoadLids() {
     const int count = gry_.numLid();
     lidIsRoad_.assign(static_cast<size_t>(count), 0);
     lidIsWater_.assign(static_cast<size_t>(count), 0);
+    lidIsGrass_.assign(static_cast<size_t>(count), 0);
+    lidR_.assign(static_cast<size_t>(count), 0);
+    lidG_.assign(static_cast<size_t>(count), 0);
+    lidB_.assign(static_cast<size_t>(count), 0);
     if (count <= 1) return;
 
     std::vector<uint8_t> tile(4096);
@@ -145,6 +149,20 @@ void AssetManager::classifyRoadLids() {
             if (b > r + 20 && b > g + 10) ++blue;
         }
         const int mean = brightness / 4096;
+        {
+            int sr = 0, sg = 0, sb = 0;
+            for (uint8_t index : tile) {
+                sr += gry_.palette.rgb[index * 3 + 0];
+                sg += gry_.palette.rgb[index * 3 + 1];
+                sb += gry_.palette.rgb[index * 3 + 2];
+            }
+            lidR_[static_cast<size_t>(lid)] =
+                static_cast<uint8_t>(std::clamp(sr / 4096, 0, 255));
+            lidG_[static_cast<size_t>(lid)] =
+                static_cast<uint8_t>(std::clamp(sg / 4096, 0, 255));
+            lidB_[static_cast<size_t>(lid)] =
+                static_cast<uint8_t>(std::clamp(sb / 4096, 0, 255));
+        }
         // Asphalt is dark and usually carries yellow lane markings.  Water
         // and grass are excluded by their dominant hues.
         if (blue > 1500 && mean > 55) {
@@ -163,6 +181,7 @@ void AssetManager::classifyRoadLids() {
         // Lush green tile without much asphalt colouring; used as the floor
         // for empty map cells on land.
         if (green > 1200 && green > blue * 2 && mean > 35) {
+            lidIsGrass_[static_cast<size_t>(lid)] = 1;
             if (grass == 0) grassFallbackLid_ = lid;
             ++grass;
         }
@@ -193,38 +212,90 @@ bool AssetManager::isWaterTile(int index1Based) const {
     return lidIsWater_[static_cast<size_t>(index1Based)] != 0;
 }
 
+bool AssetManager::isGrassTile(int index1Based) const {
+    if (index1Based <= 0 ||
+        index1Based >= static_cast<int>(lidIsGrass_.size()))
+        return false;
+    return lidIsGrass_[static_cast<size_t>(index1Based)] != 0;
+}
+
+void AssetManager::lidColor(int index1Based, uint8_t& r, uint8_t& g,
+                            uint8_t& b) const {
+    if (index1Based <= 0 || index1Based >= static_cast<int>(lidR_.size())) {
+        r = g = b = 0;
+        return;
+    }
+    r = lidR_[static_cast<size_t>(index1Based)];
+    g = lidG_[static_cast<size_t>(index1Based)];
+    b = lidB_[static_cast<size_t>(index1Based)];
+}
+
 bool AssetManager::buildMinimap(std::string& error) {
     const int size = CityMap::kSize;
     std::vector<uint8_t> pixels(static_cast<size_t>(size) * size * 4, 0);
 
+    // GTA1's map screen is a clean, flat rendering of the city: asphalt roads,
+    // blue water, green parks and grey roofs.  Rebuild that look directly
+    // from the CMP/GRY data instead of dumping the noisy gameplay texture.
+    const int groundLevel = [&]() {
+        int histogram[8] = {0};
+        for (int y = 0; y < size; ++y) {
+            for (int x = 0; x < size; ++x) {
+                const int count = map_.blockCount(x, y);
+                int top = 0;
+                for (int z = count - 1; z >= 0; --z) {
+                    const MapBlock* block = map_.blockAt(x, y, z);
+                    if (!block || block->isAir() || block->isFlat() ||
+                        block->lid == 0)
+                        continue;
+                    top = z + 1;
+                    break;
+                }
+                if (top > 0 && top < 8) ++histogram[top];
+            }
+        }
+        int best = 2;
+        for (int i = 1; i < 8; ++i) {
+            if (histogram[i] > histogram[best]) best = i;
+        }
+        return best;
+    }();
+
     for (int y = 0; y < size; ++y) {
         for (int x = 0; x < size; ++x) {
             const int count = map_.blockCount(x, y);
-            int surface = 0;
-            bool road = false;
+            int top = 0;
+            int lid = 0;
             bool water = false;
-            for (int z = 0; z < count; ++z) {
+            for (int z = count - 1; z >= 0; --z) {
                 const MapBlock* block = map_.blockAt(x, y, z);
-                if (!block || block->isAir()) continue;
-                surface = z + 1;
-                if (isRoadTile(block->lid)) road = true;
-                if (block->lid > 0 &&
-                    block->lid < static_cast<int>(lidIsWater_.size()) &&
-                    lidIsWater_[static_cast<size_t>(block->lid)]) {
-                    water = true;
-                }
+                if (!block || block->isAir() || block->isFlat() ||
+                    block->lid == 0)
+                    continue;
+                top = z + 1;
+                lid = block->lid;
+                water = isWaterTile(block->lid);
+                break;
             }
 
-            uint8_t r = 35, g = 43, b = 34;
-            if (road) {
-                r = 78; g = 78; b = 84;
-            } else if (water) {
-                r = 22; g = 60; b = 115;
-            } else if (surface > 0) {
-                const int shade = std::max(80, 190 - std::min(surface, 6) * 15);
-                r = static_cast<uint8_t>(shade);
-                g = static_cast<uint8_t>(shade);
-                b = static_cast<uint8_t>(std::max(60, shade - 8));
+            uint8_t r = 30, g = 34, b = 30;
+            if (water) {
+                r = 34; g = 92; b = 158;
+            } else if (top == 0) {
+                r = 24; g = 56; b = 96; // open sea outside the map blocks
+            } else if (isRoadTile(lid)) {
+                r = 66; g = 68; b = 74;
+            } else if (isGrassTile(lid)) {
+                r = 74; g = 112; b = 56;
+            } else if (top > groundLevel + 1) {
+                // Roof: use the tile's own average colour, slightly darkened.
+                lidColor(lid, r, g, b);
+                r = static_cast<uint8_t>(r * 3 / 4 + 30);
+                g = static_cast<uint8_t>(g * 3 / 4 + 30);
+                b = static_cast<uint8_t>(b * 3 / 4 + 30);
+            } else {
+                // Pavement.
+                r = 148; g = 146; b = 138;
             }
 
             const size_t o = (static_cast<size_t>(y) * size + x) * 4;

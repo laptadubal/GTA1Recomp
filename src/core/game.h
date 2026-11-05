@@ -52,6 +52,7 @@ private:
         Settings,
         Controls,
         Playing,
+        CityMap,
         Paused,
         PausedSettings,
         MissionComplete
@@ -313,6 +314,7 @@ private:
                         bool fromPause);
     void updateControls(InputManager& input, AudioManager& audio);
     void updatePlaying(float dt, InputManager& input, AudioManager& audio);
+    void updateCityMap(InputManager& input, AudioManager& audio);
     void updatePaused(InputManager& input, AudioManager& audio);
     void updateMissionComplete(InputManager& input, AudioManager& audio);
     void handleGlobalInput(InputManager& input, AudioManager& audio);
@@ -344,6 +346,7 @@ private:
     void renderMainMenu(Renderer& renderer);
     void renderSettings(Renderer& renderer, bool fromPause);
     void renderControls(Renderer& renderer);
+    void renderCityMap(Renderer& renderer);
     void renderPause(Renderer& renderer);
     void renderMissionComplete(Renderer& renderer);
 

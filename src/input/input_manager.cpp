@@ -178,8 +178,8 @@ void InputManager::updateActions() {
     if (key(SDL_SCANCODE_F) || key(SDL_SCANCODE_E)) set(GameAction::EnterVehicle, 1.0f);
     if (key(SDL_SCANCODE_LCTRL) || key(SDL_SCANCODE_RCTRL) || mouseDown_)
         set(GameAction::Attack, 1.0f);
-    if (key(SDL_SCANCODE_TAB) || key(SDL_SCANCODE_Q))
-        set(GameAction::NextWeapon, 1.0f);
+    if (key(SDL_SCANCODE_Q)) set(GameAction::NextWeapon, 1.0f);
+    if (key(SDL_SCANCODE_TAB)) set(GameAction::ToggleMap, 1.0f);
     if (key(SDL_SCANCODE_F12)) set(GameAction::Screenshot, 1.0f);
     if (key(SDL_SCANCODE_EQUALS) || key(SDL_SCANCODE_KP_PLUS)) set(GameAction::ZoomIn, 1.0f);
     if (key(SDL_SCANCODE_MINUS) || key(SDL_SCANCODE_KP_MINUS)) set(GameAction::ZoomOut, 1.0f);

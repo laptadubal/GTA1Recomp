@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <cstddef>
 #include <cstdio>
 #include <filesystem>
@@ -1326,7 +1327,7 @@ void Game::beginPlay() {
         resetMission();
     }
     camera_.setZoom(config_.graphics.cameraZoom);
-    camera_.setTilt(50.0f);
+    camera_.setTilt(66.0f);
     camera_.snapTo(playerPosition());
     menuIndex_ = 0;
     screen_ = Screen::Playing;
@@ -1386,6 +1387,11 @@ bool Game::showScreen(const std::string& name) {
     if (name == "controls") {
         settingsReturn_ = Screen::MainMenu;
         screen_ = Screen::Controls;
+        return true;
+    }
+    if (name == "map") {
+        if (screen_ != Screen::Playing) startGame();
+        screen_ = Screen::CityMap;
         return true;
     }
     if (name == "pause") {
@@ -1459,6 +1465,9 @@ void Game::update(float dt, InputManager& input, AudioManager& audio) {
         break;
     case Screen::Playing:
         updatePlaying(dt, input, audio);
+        break;
+    case Screen::CityMap:
+        updateCityMap(input, audio);
         break;
     case Screen::Paused:
         updatePaused(input, audio);
@@ -1830,8 +1839,10 @@ void Game::updateOnFoot(float dt, InputManager& input, AudioManager& audio) {
     next.x += moveX * speed * dt;
     next.z += moveZ * speed * dt;
 
+    // On foot the player can step off the road: pavements, parks and bridge
+    // decks are all walkable, buildings and water are not.
     auto walkable = [&](float x, float z) {
-        return world_.isDrivable(x, z);
+        return world_.isPassable(x, z);
     };
     if (!walkable(next.x, next.z)) {
         Vec3 slideX{next.x, footPos_.y, footPos_.z};
@@ -1846,10 +1857,9 @@ void Game::updateOnFoot(float dt, InputManager& input, AudioManager& audio) {
     }
     const bool moving = (next.x != footPos_.x || next.z != footPos_.z);
     footPos_ = next;
-    const int surface =
-        world_.roadSurface(static_cast<int>(std::floor(footPos_.x)),
-                           static_cast<int>(std::floor(footPos_.z)));
-    if (surface > 0) footPos_.y = static_cast<float>(surface);
+    footPos_.y = static_cast<float>(
+        world_.surfaceHeight(static_cast<int>(std::floor(footPos_.x)),
+                             static_cast<int>(std::floor(footPos_.z))));
 
     if (moving && std::abs(moveX) + std::abs(moveZ) > 0.01f) {
         footYaw_ = std::atan2(moveX, -moveZ);
@@ -1983,9 +1993,15 @@ void Game::updatePlaying(float dt, InputManager& input, AudioManager& audio) {
         return;
     }
 
+    if (input.pressed(GameAction::ToggleMap)) {
+        audio.playUiClick();
+        screen_ = Screen::CityMap;
+        return;
+    }
+
     if (input.pressed(GameAction::ToggleCamera)) {
         cameraMode_ = (cameraMode_ + 1) % 3;
-        const float tilts[3] = {50.0f, 42.0f, 62.0f};
+        const float tilts[3] = {66.0f, 55.0f, 78.0f};
         camera_.setTilt(tilts[cameraMode_]);
     }
     if (input.pressed(GameAction::ZoomIn)) {
@@ -2139,6 +2155,16 @@ void Game::updatePlaying(float dt, InputManager& input, AudioManager& audio) {
     audio.setPaused(false);
     audio.setEngine(inCar_ && !modal ? vehicle_.speed() : 0.0f,
                     inCar_ && !modal ? controls.throttle : 0.0f, false);
+}
+
+void Game::updateCityMap(InputManager& input, AudioManager& audio) {
+    if (input.pressed(GameAction::ToggleMap) ||
+        input.pressed(GameAction::MenuBack) ||
+        input.pressed(GameAction::TogglePause) ||
+        input.pressed(GameAction::MenuSelect) || input.mousePressed()) {
+        audio.playUiClick();
+        screen_ = Screen::Playing;
+    }
 }
 
 void Game::updatePaused(InputManager& input, AudioManager& audio) {
@@ -2306,6 +2332,9 @@ void Game::render(Renderer& renderer) {
         glDisable(GL_DEPTH_TEST);
         drawHud(renderer);
         drawMissionUi(renderer);
+        break;
+    case Screen::CityMap:
+        renderCityMap(renderer);
         break;
     case Screen::Paused:
         renderWorldScene(renderer, true, true);
@@ -2790,9 +2819,14 @@ void Game::spawnPeds() {
                             pedestrians_.size() < 24; ++attempt) {
         const int x = coordinate(rng_);
         const int y = coordinate(rng_);
-        const int surface = world_.roadSurface(x, y);
-        if (surface <= 0) continue;
-        const Vec3 pos{x + 0.5f, static_cast<float>(surface), y + 0.5f};
+        // Pedestrians belong on the pavement; only fall back to the road if
+        // the area around the player has no walkable pavement at all.
+        const bool road = world_.roadSurface(x, y) > 0;
+        if (road && attempt < 9000) continue;
+        if (!world_.isPassable(x + 0.5f, y + 0.5f)) continue;
+        const Vec3 pos{x + 0.5f,
+                       static_cast<float>(world_.surfaceHeight(x, y)),
+                       y + 0.5f};
         const float dx = pos.x - player.x;
         const float dz = pos.z - player.z;
         const float d2 = dx * dx + dz * dz;
@@ -2831,13 +2865,25 @@ void Game::updatePeds(float dt) {
     auto chooseDirection = [&](Pedestrian& ped) {
         int options[4];
         int count = 0;
+        int roadOptions[4];
+        int roadCount = 0;
         for (int k = 0; k < 4; ++k) {
             const int dx = dirs[k][0];
             const int dy = dirs[k][1];
             if (dx == -ped.dirX && dy == -ped.dirY) continue;
-            if (world_.roadSurface(ped.cellX + dx, ped.cellY + dy) > 0) {
+            const int nx = ped.cellX + dx;
+            const int ny = ped.cellY + dy;
+            if (!world_.isPassable(nx + 0.5f, ny + 0.5f)) continue;
+            // Prefer staying on the pavement; road cells are a last resort.
+            if (world_.roadSurface(nx, ny) == 0) {
                 options[count++] = k;
+            } else {
+                roadOptions[roadCount++] = k;
             }
+        }
+        if (count == 0) {
+            for (int i = 0; i < roadCount; ++i) options[i] = roadOptions[i];
+            count = roadCount;
         }
         if (count == 0) return false;
         std::uniform_int_distribution<int> pick(0, count - 1);
@@ -2851,9 +2897,11 @@ void Game::updatePeds(float dt) {
         for (int attempt = 0; attempt < 3000; ++attempt) {
             const int x = coordinate(rng_);
             const int y = coordinate(rng_);
-            const int surface = world_.roadSurface(x, y);
-            if (surface <= 0) continue;
-            const Vec3 pos{x + 0.5f, static_cast<float>(surface), y + 0.5f};
+            if (world_.roadSurface(x, y) > 0) continue;
+            if (!world_.isPassable(x + 0.5f, y + 0.5f)) continue;
+            const Vec3 pos{x + 0.5f,
+                           static_cast<float>(world_.surfaceHeight(x, y)),
+                           y + 0.5f};
             const float dx = pos.x - player.x;
             const float dz = pos.z - player.z;
             const float d2 = dx * dx + dz * dz;
@@ -2888,7 +2936,8 @@ void Game::updatePeds(float dt) {
 
         int nextSurface =
             world_.roadSurface(ped.cellX + ped.dirX, ped.cellY + ped.dirY);
-        if (nextSurface <= 0) {
+        if (!world_.isPassable(ped.cellX + ped.dirX + 0.5f,
+                               ped.cellY + ped.dirY + 0.5f)) {
             if (!chooseDirection(ped)) {
                 ped.stuck += dt;
                 if (ped.stuck > 1.0f) respawn(ped);
@@ -2896,6 +2945,12 @@ void Game::updatePeds(float dt) {
             }
             nextSurface =
                 world_.roadSurface(ped.cellX + ped.dirX, ped.cellY + ped.dirY);
+            if (nextSurface <= 0)
+                nextSurface = world_.surfaceHeight(ped.cellX + ped.dirX,
+                                                   ped.cellY + ped.dirY);
+        } else if (nextSurface <= 0) {
+            nextSurface = world_.surfaceHeight(ped.cellX + ped.dirX,
+                                               ped.cellY + ped.dirY);
         }
 
         const Vec3 target{ped.cellX + ped.dirX + 0.5f,
@@ -4830,12 +4885,12 @@ void Game::renderControls(Renderer& renderer) {
     drawOriginalText(renderer, frame, "CONTROLS", 320.0f, 74.0f, 0.9f, 1.0f,
                      0.88f, 0.4f, 1.0f, true);
 
-    const char* leftKeys[] = {"WASD", "SPACE", "F / E", "P / ESC", "R", "C"};
+    const char* leftKeys[] = {"WASD", "SPACE", "F / E", "TAB", "P / ESC", "R"};
     const char* leftActions[] = {"DRIVE / WALK", "HANDBRAKE", "ENTER CAR",
-                                 "PAUSE",        "RESET CAR", "CAMERA"};
-    const char* rightKeys[] = {"+ / -", "M",  "F1", "F2", "F3", "F4", "F12"};
-    const char* rightActions[] = {"ZOOM", "TRACK", "FULLSCREEN", "FXAA",
-                                  "DEBUG", "MINIMAP", "SCREENSHOT"};
+                                 "CITY MAP",     "PAUSE",     "RESET CAR"};
+    const char* rightKeys[] = {"+ / -", "C", "Q", "M", "F1", "F3", "F12"};
+    const char* rightActions[] = {"ZOOM", "CAMERA", "WEAPON", "RADIO",
+                                  "FULLSCREEN", "DEBUG", "SCREENSHOT"};
     float y = 132.0f;
     for (int i = 0; i < 6; ++i) {
         drawOriginalText(renderer, frame, leftKeys[i], 60.0f, y, 0.4f, 1.0f,
@@ -4854,6 +4909,101 @@ void Game::renderControls(Renderer& renderer) {
     }
     drawOriginalText(renderer, frame, "ESC / ENTER  BACK", 320.0f, 452.0f,
                      0.46f, 0.75f, 0.8f, 0.86f, 0.92f, true);
+}
+
+void Game::renderCityMap(Renderer& renderer) {
+    const float w = static_cast<float>(renderer.width());
+    const float h = static_cast<float>(renderer.height());
+    const float s = uiScale();
+    drawRect(renderer, 0, 0, w, h, 0.025f, 0.035f, 0.045f, 1.0f);
+    if (!assets_.minimapTexture()) {
+        drawHudText(renderer, missionHeaderFont_, "NO MAP DATA", w * 0.5f,
+                    h * 0.5f, 2.0f * s, 1.0f, 0.8f, 0.3f, 1.0f, true, true);
+        return;
+    }
+
+    const float size = std::min(w, h) * 0.74f;
+    const float x = (w - size) * 0.5f;
+    const float y = (h - size) * 0.5f + 28.0f * s;
+
+    // Gold frame and subtle drop shadow.
+    drawRect(renderer, x - 8.0f * s, y - 8.0f * s, size + 16.0f * s,
+             size + 16.0f * s, 0.72f, 0.62f, 0.28f, 1.0f);
+    drawRect(renderer, x - 4.0f * s, y - 4.0f * s, size + 8.0f * s,
+             size + 8.0f * s, 0.10f, 0.11f, 0.13f, 1.0f);
+    drawTexturedRect(renderer, assets_.minimapTexture(), x, y, size, size, 0, 0,
+                     1, 1, 1.0f, 1.0f, 1.0f, 1.0f);
+
+    auto toScreen = [&](const Vec3& p, float& ox, float& oy) {
+        ox = x + std::clamp(p.x / 256.0f, 0.0f, 1.0f) * size;
+        oy = y + std::clamp(p.z / 256.0f, 0.0f, 1.0f) * size;
+    };
+
+    // Payphones: the next one is highlighted, the rest are dim.
+    for (size_t i = 0; i < phones_.size(); ++i) {
+        if (!phones_[i].active) continue;
+        float mx = 0.0f, my = 0.0f;
+        toScreen(phones_[i].pos, mx, my);
+        const bool next = missionState_ == MissionState::Idle &&
+                          static_cast<int>(i) == activePhone_;
+        const float r = (next ? 4.0f : 2.2f) * s;
+        drawRect(renderer, mx - r - 1.0f * s, my - r - 1.0f * s,
+                 r * 2.0f + 2.0f * s, r * 2.0f + 2.0f * s, 0.0f, 0.0f, 0.0f,
+                 0.85f);
+        drawRect(renderer, mx - r, my - r, r * 2.0f, r * 2.0f,
+                 next ? 0.2f : 0.35f, next ? 1.0f : 0.75f, 0.5f, 1.0f);
+    }
+
+    // Active mission destination.
+    if (missionState_ == MissionState::Active) {
+        float mx = 0.0f, my = 0.0f;
+        toScreen(targetPos_, mx, my);
+        const float pulse = (5.0f + std::sin(worldTime_ * 5.0f) * 1.5f) * s;
+        drawRect(renderer, mx - pulse - 1.5f * s, my - pulse - 1.5f * s,
+                 pulse * 2.0f + 3.0f * s, pulse * 2.0f + 3.0f * s, 0.0f, 0.0f,
+                 0.0f, 0.9f);
+        drawRect(renderer, mx - pulse, my - pulse, pulse * 2.0f, pulse * 2.0f,
+                 1.0f, 0.8f, 0.2f, 1.0f);
+    }
+
+    // Player: white arrow showing the facing direction.
+    {
+        float mx = 0.0f, my = 0.0f;
+        toScreen(playerPosition(), mx, my);
+        const float yaw = inCar_ ? vehicle_.yaw() : footYaw_;
+        const float fx = std::sin(yaw) * 9.0f * s;
+        const float fz = -std::cos(yaw) * 9.0f * s;
+        const float rx = std::cos(yaw) * 5.0f * s;
+        const float rz = std::sin(yaw) * 5.0f * s;
+        drawColoredTriangle(renderer, Vec3{mx + fx, 0, my + fz},
+                            Vec3{mx - rx, 0, my - rz},
+                            Vec3{mx + rx, 0, my + rz}, 1.0f, 1.0f, 1.0f, 1.0f);
+    }
+
+    const std::string city = assets_.cityName();
+    const char* title = "LIBERTY CITY";
+    if (city == "SANB") title = "SAN ANDREAS";
+    else if (city == "MIAMI") title = "VICE CITY";
+    drawHudText(renderer, missionHeaderFont_, title, w * 0.5f,
+                y - 52.0f * s, 1.7f * s, 1.0f, 0.88f, 0.35f, 1.0f, true,
+                true);
+
+    // Legend.
+    const float legendY = y + size + 18.0f * s;
+    const float legendX = x + 8.0f * s;
+    auto legend = [&](float lx, float r, float g, float b, const char* label) {
+        drawRect(renderer, lx, legendY, 12.0f * s, 12.0f * s, r, g, b, 1.0f);
+        drawHudText(renderer, missionFont_, label, lx + 18.0f * s,
+                    legendY - 2.0f * s, 0.55f * s, 0.85f, 0.9f, 0.95f, 1.0f,
+                    false, false);
+    };
+    legend(legendX, 0.2f, 1.0f, 0.5f, "PAYPHONE");
+    legend(legendX + 150.0f * s, 1.0f, 0.8f, 0.2f, "OBJECTIVE");
+    legend(legendX + 320.0f * s, 1.0f, 1.0f, 1.0f, "YOU");
+
+    drawHudText(renderer, missionFont_, "TAB / ESC  CLOSE   F4  MINIMAP",
+                w * 0.5f, h - 22.0f * s, 0.55f * s, 0.7f, 0.78f, 0.86f, 0.95f,
+                true, false);
 }
 
 void Game::renderPause(Renderer& renderer) {

@@ -45,6 +45,9 @@ public:
     // cities/styles work without a hard-coded tile table.
     bool isRoadTile(int index1Based) const;
     bool isWaterTile(int index1Based) const;
+    bool isGrassTile(int index1Based) const;
+    // Average palette colour of a lid tile, used by the clean city map.
+    void lidColor(int index1Based, uint8_t& r, uint8_t& g, uint8_t& b) const;
 
     // Representative lids used when a map block has no texture of its own.
     int roadFallbackLid() const { return roadFallbackLid_; }
@@ -90,6 +93,10 @@ private:
     std::vector<TileUV> auxUVs_;
     std::vector<uint8_t> lidIsRoad_;
     std::vector<uint8_t> lidIsWater_;
+    std::vector<uint8_t> lidIsGrass_;
+    std::vector<uint8_t> lidR_;
+    std::vector<uint8_t> lidG_;
+    std::vector<uint8_t> lidB_;
     int roadFallbackLid_ = 1;
     int roofFallbackLid_ = 1;
     int waterFallbackLid_ = 1;

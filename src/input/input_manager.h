@@ -18,6 +18,7 @@ enum class GameAction {
     ToggleFxaa,
     ToggleDebug,
     ToggleMinimap,
+    ToggleMap,
     ToggleCamera,
     Reset,
     EnterVehicle,

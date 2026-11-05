@@ -44,7 +44,8 @@ cities (`NYC`, `MIAMI`, `SANB`) load and run; pick one from the menu or with
 | Touch controls | ✅ basic virtual stick + pedals (Android) |
 | Config file | ✅ `config.ini` in the SDL pref directory |
 | Screenshot capture | ✅ `F12` or `--screenshot out.bmp` (F12 writes to the config directory) |
-| Weapons / damage / full mission scripts | 🚧 future work |
+| Weapons / damage / police | ✅ pistol, UZI, flamethrower, rockets, wanted stars |
+| City map screen | ✅ `Tab`, clean cartographic render of the CMP |
 
 ## Getting the game data
 
@@ -149,13 +150,15 @@ data and skips gracefully when the data is not available.
 | Pause / back | `P` / `Esc` | Start / B |
 | Enter / exit car | `F` / `E` | left shoulder |
 | Answer phone / accept mission | `Enter` / `Space` | A |
+| City map | `Tab` | Back / Select |
+| Next weapon | `Q` | — |
 | Reset car | `R` | Y / Triangle |
 | Fullscreen | `F1` | — |
 | Toggle FXAA | `F2` | — |
 | Debug overlay | `F3` | Back / Select |
 | Camera angle | `C` | X / Square |
 | Zoom | `+` / `-` | — |
-| Next music track | `M` | — |
+| Next radio track | `M` | — |
 | Screenshot | `F12` | — |
 | Quit | menu → QUIT / close window | — |
 
