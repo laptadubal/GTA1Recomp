@@ -62,7 +62,11 @@ bool World::isPassable(float worldX, float worldZ) const {
     const int n = map.blockCount(cx, cy);
     if (n <= 0) return false;
     const int surface = surface_[cy * CityMap::kSize + cx];
-    if (surface <= 0) return true; // decal-only ground cell
+    if (surface <= 0) {
+        // A column with only decals/floors is walkable unless its floor was
+        // classified as water (park lakes, canals).
+        return floorWater_[static_cast<size_t>(cy * CityMap::kSize + cx)] == 0;
+    }
     // Buildings block the car; water does not carry it.
     if (visualHeight(surface) > static_cast<int>(baseHeight_)) return false;
     for (int z = n - 1; z >= 0; --z) {

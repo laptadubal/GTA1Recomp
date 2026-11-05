@@ -219,6 +219,7 @@ private:
 
     bool loadCity(const std::string& city, std::string& error);
     bool setupCar(std::string& error);
+    std::string carNameForSprite(int spriteIndex) const;
     void startGame();
     void beginPlay();
     void startSelectedGame();

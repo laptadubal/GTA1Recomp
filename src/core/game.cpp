@@ -167,6 +167,19 @@ void Game::shutdown() {
     assets_.destroy();
 }
 
+std::string Game::carNameForSprite(int spriteIndex) const {
+    const auto& cars = assets_.gry().cars;
+    for (const GryCarInfo& car : cars) {
+        if (assets_.gry().carSpriteIndex(car.sprNum) != spriteIndex) continue;
+        const auto it = fxt_.find("car" + std::to_string(car.model));
+        if (it != fxt_.end() && !it->second.empty()) return it->second;
+        break;
+    }
+    char label[32];
+    std::snprintf(label, sizeof(label), "MODEL %d", carModel_);
+    return label;
+}
+
 bool Game::setupCar(std::string& error) {
     const auto& cars = assets_.gry().cars;
     if (cars.empty()) {
@@ -187,9 +200,7 @@ bool Game::setupCar(std::string& error) {
     const GrySpriteInfo& info = assets_.gry().sprites[sprite];
     vehicle_.setSprite(sprite, info.w, info.h, car.model);
     carModel_ = car.model;
-    char label[64];
-    std::snprintf(label, sizeof(label), "MODEL %d", carModel_);
-    carLabel_ = label;
+    carLabel_ = carNameForSprite(sprite);
     assets_.carSpriteTexture(spriteIndex_);
     return true;
 }
@@ -359,6 +370,8 @@ void Game::loadOriginalMenuAssets() {
             start = end + 1;
         }
     }
+
+    carLabel_ = carNameForSprite(spriteIndex_);
 
     originalAssets_ = menuUpper_ != 0 && menuLower_ != 0 &&
                       logoTextures_[0] != 0;
@@ -1198,7 +1211,7 @@ void Game::takeMissionCar() {
     vehicle_.setSprite(missionCar_.spriteIndex, missionCar_.pixelWidth,
                        missionCar_.pixelHeight, 0);
     assets_.carSpriteTexture(missionCar_.spriteIndex);
-    carLabel_ = "MISSION CAR";
+    carLabel_ = carNameForSprite(spriteIndex_);
     footPos_ = missionCar_.pos;
     inCar_ = true;
     missionCar_.active = false;
@@ -3364,7 +3377,7 @@ void Game::carjackNearest(AudioManager& audio) {
     vehicle_.setYaw(car.yaw);
     vehicle_.setSprite(car.spriteIndex, info.w, info.h, 0);
     assets_.carSpriteTexture(car.spriteIndex);
-    carLabel_ = "STOLEN CAR";
+    carLabel_ = carNameForSprite(car.spriteIndex);
     carHealth_ = std::max(25.0f, car.health);
     carHealthMax_ = 100.0f;
     carSmokeTimer_ = 0.0f;
@@ -5777,8 +5790,36 @@ void Game::drawHud(Renderer& renderer) {
                                 ? missionFont_.measure(speed, scale)
                                 : textWidth(speed, 1.0f * s);
         drawHudText(renderer, missionFont_, speed, sw - margin - width,
-                    sh - 34.0f * s, scale, 0.9f, 0.94f, 1.0f, 0.95f, false,
+                    sh - 36.0f * s, scale, 0.9f, 0.94f, 1.0f, 0.95f, false,
                     true);
+
+        // Vehicle condition bar.
+        const float barW = 150.0f * s;
+        const float barH = 5.0f * s;
+        const float barX = sw - margin - barW;
+        const float barY = sh - 24.0f * s;
+        const float damage = std::clamp(carHealth_ / std::max(1.0f, carHealthMax_),
+                                        0.0f, 1.0f);
+        drawRect(renderer, barX, barY, barW, barH, 0.0f, 0.0f, 0.0f, 0.6f);
+        drawRect(renderer, barX + 1.0f * s, barY + 1.0f * s,
+                 (barW - 2.0f * s) * damage, barH - 2.0f * s,
+                 damage > 0.5f ? 0.35f : 1.0f,
+                 damage > 0.5f ? 0.9f : 0.35f, 0.3f, 1.0f);
+
+        // Radio station (track) readout.
+        if (!musicTracks_.empty() && config_.audio.music) {
+            char radio[40];
+            std::snprintf(radio, sizeof(radio), "RADIO  %d/%d",
+                          musicTrack_ + 1,
+                          static_cast<int>(musicTracks_.size()));
+            const float rscale = 0.34f * s;
+            const float rwidth = missionFont_.valid()
+                                     ? missionFont_.measure(radio, rscale)
+                                     : textWidth(radio, 0.8f * s);
+            drawHudText(renderer, missionFont_, radio, sw - margin - rwidth,
+                        sh - 50.0f * s, rscale, 0.75f, 0.82f, 0.9f, 0.9f,
+                        false, true);
+        }
     } else {
         drawHudText(renderer, missionFont_, "ON FOOT", sw - margin - 54.0f * s,
                     sh - 34.0f * s, 0.42f * s, 0.75f, 0.82f, 0.9f, 0.9f, false,
