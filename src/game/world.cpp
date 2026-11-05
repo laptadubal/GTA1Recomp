@@ -298,6 +298,35 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
                 uv, r, g, b, transparent);
     };
 
+    // Horizontal map tiles are rotated in 90-degree steps by the two rotation
+    // bits in typeMap.  Vertex order here is north-west, north-east,
+    // south-east, south-west.  GTA1's stored rotation is measured against a
+    // texture whose north edge points east, hence the extra +1 quarter turn;
+    // without it lane markings and corner curbs end up at right angles to the
+    // roads (the "asset salad" look).
+    auto addLid = [&](const Vec3& p0, const Vec3& p1, const Vec3& p2,
+                      const Vec3& p3, const TileUV& uv, int rotation,
+                      bool transparent) {
+        std::vector<uint32_t>& index =
+            transparent ? alphaIndex : opaqueIndex;
+        const float us[4] = {uv.u0, uv.u1, uv.u1, uv.u0};
+        const float vs[4] = {uv.v0, uv.v0, uv.v1, uv.v1};
+        const Vec3* points[4] = {&p0, &p1, &p2, &p3};
+        const uint32_t base = static_cast<uint32_t>(vertices.size());
+        for (int i = 0; i < 4; ++i) {
+            const int corner = (i - rotation + 1) & 3;
+            const Vec3& p = *points[i];
+            vertices.push_back({p.x, p.y, p.z, us[corner], vs[corner], 1.0f,
+                                1.0f, 1.0f, 1.0f});
+        }
+        index.push_back(base + 0);
+        index.push_back(base + 1);
+        index.push_back(base + 2);
+        index.push_back(base + 0);
+        index.push_back(base + 2);
+        index.push_back(base + 3);
+    };
+
     auto blockAtOrNull = [&](int x, int y, int z) -> const MapBlock* {
         if (x < 0 || y < 0 || x >= CityMap::kSize || y >= CityMap::kSize)
             return nullptr;
@@ -359,16 +388,13 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
                 const float y1 = y0 + 1.0f;
 
                 if (block->lid) {
-                    TileUV uv = assets.lidUV(block->lid);
+                    const TileUV uv = assets.lidUV(block->lid);
                     // Only draw textures that actually exist in the archive;
                     // inventing a fallback here hides the real city layout.
                     if (uv.u1 > uv.u0) {
-                        const float v = uv.v0;
-                        uv.v0 = uv.v1;
-                        uv.v1 = v;
-                        add(Vec3{x0, y1, z0}, Vec3{x1, y1, z0},
-                            Vec3{x1, y1, z1}, Vec3{x0, y1, z1}, uv, 1.0f,
-                            1.0f, 1.0f, flat);
+                        addLid(Vec3{x0, y1, z0}, Vec3{x1, y1, z0},
+                               Vec3{x1, y1, z1}, Vec3{x0, y1, z1}, uv,
+                               static_cast<int>(block->rotation()), flat);
                     }
                 }
 
