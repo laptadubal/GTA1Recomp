@@ -34,8 +34,8 @@ cities (`NYC`, `MIAMI`, `SANB`) load and run; pick one from the menu or with
 | Original intro cutscene | ✅ `CUT0` art + `ENGLISH.FXT` dialogue |
 | Original music | ✅ `AUDIO/0.WAV..5.WAV` |
 | Original sound effects | ✅ `LEVEL001.SDT/RAW` bank (UI, crash, pickup, phone) |
-| Phone missions | 🚧 original phone positions + briefings, simplified objectives |
-| Traffic / pedestrians | ✅ simple grid AI on the real road network |
+| Phone missions | ✅ 22 jobs per city, real briefings, district-based targets, rewards |
+| Traffic / pedestrians | ✅ grid AI; peds prefer pavements, traffic follows the road network |
 | Arbitrary resolutions / resize | ✅ render target follows the window |
 | Windowed / borderless fullscreen | ✅ `F1` or `--fullscreen` |
 | MSAA | ✅ 0/2/4/8/16 via `--msaa` / config |
@@ -46,6 +46,8 @@ cities (`NYC`, `MIAMI`, `SANB`) load and run; pick one from the menu or with
 | Screenshot capture | ✅ `F12` or `--screenshot out.bmp` (F12 writes to the config directory) |
 | Weapons / damage / police | ✅ pistol, UZI, flamethrower, rockets, wanted stars |
 | City map screen | ✅ `Tab`, clean cartographic render of the CMP |
+| Campaign / save game | ✅ autosave, CONTINUE in the menu, city-to-city travel |
+| Vehicle condition / radio | ✅ damage bar, real car names, track readout |
 
 ## Getting the game data
 
@@ -261,11 +263,14 @@ original game; press `F`/`E` to get in and out of the car.
 
 Approximations that still need reverse engineering of `GTA8.EXE`:
 
-* the original mission scripts, triggers, weapons, damage model and police AI;
+* the exact original mission scripts and triggers.  The engine keeps the real
+  payphone positions, briefings and named districts (from the CMP nav table and
+  `ENGLISH.FXT`), then generates a matching objective inside the district the
+  briefing mentions;
 * the original traffic/pedestrian decision logic (the current version uses a
   simple road-grid AI);
-* all cutscene/mission flow transitions (the intro currently plays `CUT0` and
-  the first phone chain, not the complete 6-cutscene story).
+* all cutscene/mission flow transitions (each city plays its own intro
+  cutscene and then its 22-job phone chain).
 
 ## Deviations from the guide
 

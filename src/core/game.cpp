@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
+#include <cstdlib>
 #include <cstddef>
 #include <cstdio>
 #include <filesystem>
@@ -562,6 +563,20 @@ void Game::loadMissionData() {
                     title.find("cannonball") == std::string::npos) {
                     inSection = true;
                     foundSection = true;
+                    // The section header carries the real job count as the
+                    // second comma-separated field ("Easy Liberty City NEW,
+                    // 22, nyc.cmp, 0,").
+                    const size_t first = title.find(',');
+                    if (first != std::string::npos) {
+                        const size_t second = title.find(',', first + 1);
+                        if (second != std::string::npos) {
+                            const std::string number =
+                                title.substr(first + 1, second - first - 1);
+                            const int count = std::atoi(number.c_str());
+                            if (count > 0 && count <= 60)
+                                cityMissionCount_ = count;
+                        }
+                    }
                 }
                 pendingTitle = false;
                 continue;
@@ -804,8 +819,12 @@ void Game::buildMissionPlan() {
         seedCount = sizeof(miamiSeeds) / sizeof(miamiSeeds[0]);
     }
 
-    for (size_t i = 0; i < seedCount; ++i) {
-        const Seed& seed = seeds[i];
+    const int wanted = std::max(1, cityMissionCount_);
+    for (int i = 0; i < wanted && seedCount > 0; ++i) {
+        // Each city chapter has 22 jobs; cycle the authored briefing seeds if
+        // this city's table is shorter so the campaign still has the right
+        // length.
+        const Seed& seed = seeds[static_cast<size_t>(i) % seedCount];
         const auto it = fxt_.find(std::to_string(seed.textId));
         if (it == fxt_.end() || it->second.empty()) continue;
         MissionPlan plan;
@@ -1696,6 +1715,11 @@ bool Game::showScreen(const std::string& name) {
         startBriefing();
         return true;
     }
+    if (name == "wanted") {
+        if (screen_ != Screen::Playing) startGame();
+        applyWanted(4, "TEST");
+        return true;
+    }
     if (name == "active") {
         if (screen_ != Screen::Playing) startGame();
         startBriefing();
@@ -2309,6 +2333,33 @@ void Game::updatePlaying(float dt, InputManager& input, AudioManager& audio) {
             }
         }
         if (!changed) setStatus("NO AMMUNITION");
+    }
+
+    // Development aid: with GTA_DEMO_SKIP the automated driver is teleported
+    // to the current objective, which exercises the whole mission-completion
+    // path (briefing -> objective -> result -> next phone) without steering.
+    if (demo_ && getenv("GTA_DEMO_SKIP") &&
+        missionState_ == MissionState::Idle && !phones_.empty() &&
+        worldTime_ > 1.0f) {
+        // Hop to the ringing payphone so the campaign loop can be exercised.
+        if (inCar_) {
+            vehicle_.reset(phones_[static_cast<size_t>(activePhone_)].pos);
+        } else {
+            footPos_ = phones_[static_cast<size_t>(activePhone_)].pos;
+        }
+    }
+    if (demo_ && getenv("GTA_DEMO_SKIP") &&
+        missionState_ == MissionState::Active && worldTime_ > 3.0f) {
+        if (inCar_) {
+            vehicle_.reset(targetPos_);
+        } else {
+            footPos_ = targetPos_;
+        }
+        if (getenv("GTA_DEMO_DEBUG")) {
+            std::fprintf(stderr, "[skip] mission %d type %d phase %d score %d\n",
+                         missionIndex_, static_cast<int>(missionType_),
+                         static_cast<int>(missionPhase_), score_);
+        }
     }
 
     if (demo_ && !inCar_) {
@@ -5046,8 +5097,10 @@ void Game::renderMainMenu(Renderer& renderer) {
         } else if (hasSave()) {
             char summary[80];
             std::snprintf(summary, sizeof(summary),
-                          "SAVED CAMPAIGN   JOB %02d OF 22   %d DOLLARS",
-                          config_.save.mission + 1, config_.save.score);
+                          "SAVED CAMPAIGN   JOB %02d OF %02d   %d DOLLARS",
+                          config_.save.mission + 1,
+                          std::max(1, cityMissionCount_),
+                          config_.save.score);
             drawHudText(renderer, missionFont_, summary,
                         frame.offsetX + 320.0f * frame.scale,
                         frame.offsetY + 428.0f * frame.scale, textScale * 0.9f,

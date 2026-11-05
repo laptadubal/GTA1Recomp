@@ -497,6 +497,7 @@ private:
     std::vector<Phone> phones_;
     std::vector<MissionPlan> missions_;
     std::vector<std::string> sectorNames_;
+    int cityMissionCount_ = 22;
     int missionDistrict_ = -1;
     int missionSub_ = 0;
     int activePhone_ = 0;

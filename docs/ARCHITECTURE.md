@@ -144,9 +144,17 @@ Idle (phone rings, "ENTER TO ANSWER")
   → Idle (next phone or replay)
 ```
 
-The objective logic is still simplified (reach the next marker within the time
-limit).  The original hard-coded mission scripts are not yet recovered from
-`GTA8.EXE`.
+Each city chapter has 22 jobs (the count comes from the `MISSION.INI` section
+header).  Briefings are the original `ENGLISH.FXT` strings; the engine parses
+the district named in the text (e.g. `North East Park`), resolves it to the
+CMP named-sector rectangle and places the target in that sub-area, so the HUD
+objective reads `STEAL THE CAR IN NORTH EAST PARK`.  Mission types are inferred
+from the briefing keywords with the authored seed as a fallback.  The exact
+original triggers are still not recovered from `GTA8.EXE`.
+
+Progress autosaves to `config.ini` (city, job, cash, health, weapons and
+position); the main menu offers CONTINUE.  Completing all 22 jobs shows the
+CITY COMPLETE screen and travels to the next city through its intro cutscene.
 
 ## Ambient simulation
 
