@@ -735,7 +735,39 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
                             z + 1 == columnSurface &&
                             columnSurface <= static_cast<int>(baseHeight_) + 1 &&
                             assets.isRoadTile(block->lid);
-                        const bool groundRoad = isGroundRoad && cleanRoads_;
+                        // Keep painted corners, kerbs and anything with raised
+                        // side detail (medians, railings, signs): replacing
+                        // those loses authored structure, not just paint.
+                        bool corner = false;
+                        {
+                            const int n = roadAt(cellX, cellY - 1) ? 1 : 0;
+                            const int sN = roadAt(cellX, cellY + 1) ? 1 : 0;
+                            const int w = roadAt(cellX - 1, cellY) ? 1 : 0;
+                            const int e = roadAt(cellX + 1, cellY) ? 1 : 0;
+                            corner = (n + sN + w + e) == 2 &&
+                                     ((n && e) || (e && sN) || (sN && w) ||
+                                      (w && n));
+                        }
+                        const bool hasSides = block->left || block->right ||
+                                              block->top || block->bottom;
+                        // A height step next door means a kerb, raised median
+                        // or bridge edge: keep the authored art there.
+                        bool stepped = false;
+                        const int here = visualHeight(columnSurface);
+                        const int nx[4] = {cellX - 1, cellX + 1, cellX, cellX};
+                        const int ny[4] = {cellY, cellY, cellY - 1, cellY + 1};
+                        for (int i = 0; i < 4; ++i) {
+                            if (nx[i] < 0 || ny[i] < 0 ||
+                                nx[i] >= CityMap::kSize ||
+                                ny[i] >= CityMap::kSize)
+                                continue;
+                            const int s = surface_[ny[i] * CityMap::kSize + nx[i]];
+                            if (s > 0 && visualHeight(s) != here) stepped = true;
+                        }
+                        const bool groundRoad =
+                            isGroundRoad && cleanRoads_ && !corner &&
+                            !hasSides && !stepped &&
+                            !assets.isStructuralLid(block->lid);
                         if (groundRoad) {
                             const TileUV plain = assets.lidUV(
                                 assets.plainRoadLid(), block->remapIndex());

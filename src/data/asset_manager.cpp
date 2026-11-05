@@ -120,6 +120,7 @@ bool AssetManager::load(const std::string& dataDir, const std::string& city,
 void AssetManager::classifyRoadLids() {
     const int count = gry_.numLid();
     lidIsRoad_.assign(static_cast<size_t>(count), 0);
+    lidIsStructural_.assign(static_cast<size_t>(count), 0);
     lidIsWater_.assign(static_cast<size_t>(count), 0);
     lidIsGrass_.assign(static_cast<size_t>(count), 0);
     lidR_.assign(static_cast<size_t>(count), 0);
@@ -157,6 +158,7 @@ void AssetManager::classifyRoadLids() {
         int green = 0;
         int blue = 0;
         int yellow = 0;
+        int structure = 0;
         for (uint8_t index : tile) {
             const int r = gry_.palette.rgb[index * 3 + 0];
             const int g = gry_.palette.rgb[index * 3 + 1];
@@ -198,6 +200,9 @@ void AssetManager::classifyRoadLids() {
         }
         if (!greenish && !blueish && neutral && mean >= 45 && mean < 93 &&
             spread < 26) {
+            if (structure > 4096 / 16) { // >6% structural pixels
+                lidIsStructural_[static_cast<size_t>(lid)] = 1;
+            }
             lidIsRoad_[static_cast<size_t>(lid)] = 1;
             if (roads == 0) roadFallbackLid_ = lid;
             ++roads;
@@ -229,6 +234,12 @@ void AssetManager::classifyRoadLids() {
     }
     if (grass == 0) grassFallbackLid_ = 10 < count ? 10 : 1;
     if (waterFallbackLid_ == 1) waterFallbackLid_ = 1;
+}
+
+bool AssetManager::isStructuralLid(int index1Based) const {
+    return index1Based > 0 &&
+           index1Based < static_cast<int>(lidIsStructural_.size()) &&
+           lidIsStructural_[static_cast<size_t>(index1Based)] != 0;
 }
 
 bool AssetManager::isRoadTile(int index1Based) const {

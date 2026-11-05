@@ -49,6 +49,10 @@ public:
     // markings).  Classified from the palette at load time so all three
     // cities/styles work without a hard-coded tile table.
     bool isRoadTile(int index1Based) const;
+    // True for road lids whose art contains structural detail (kerb stones,
+    // concrete medians, railings, painted corner curves).  The clean-road
+    // renderer keeps these and only replaces plain lane-paint tiles.
+    bool isStructuralLid(int index1Based) const;
     bool isWaterTile(int index1Based) const;
     bool isGrassTile(int index1Based) const;
     // Average palette colour of a lid tile, used by the clean city map.
@@ -101,6 +105,7 @@ private:
     TileUV whiteUV_{};
     int plainRoadLid_ = 1;
     std::vector<uint8_t> lidIsRoad_;
+    std::vector<uint8_t> lidIsStructural_;
     std::vector<uint8_t> lidIsWater_;
     std::vector<uint8_t> lidIsGrass_;
     std::vector<uint8_t> lidR_;
