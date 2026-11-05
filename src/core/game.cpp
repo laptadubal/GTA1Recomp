@@ -2673,27 +2673,100 @@ void Game::updateTraffic(float dt) {
         float dx = target.x - car.pos.x;
         float dz = target.z - car.pos.z;
         float distance = std::sqrt(dx * dx + dz * dz);
-        const float step = car.speed * dt;
+
+        // Keep a safe gap behind the car in front (and behind the player's
+        // car) instead of driving through it.
+        float speedScale = 1.0f;
+        auto blockedBy = [&](const Vec3& other) {
+            const float ox = other.x - car.pos.x;
+            const float oz = other.z - car.pos.z;
+            const float along =
+                ox * static_cast<float>(car.dirX) + oz * static_cast<float>(car.dirY);
+            const float lateral =
+                std::abs(ox * static_cast<float>(car.dirY) -
+                         oz * static_cast<float>(car.dirX));
+            return along > 0.0f && along < 2.3f && lateral < 0.75f;
+        };
+        for (const TrafficCar& other : traffic_) {
+            if (&other == &car || other.dead) continue;
+            if (blockedBy(other.pos)) {
+                speedScale = std::min(speedScale, 0.15f);
+                break;
+            }
+        }
+        if (inCar_ && blockedBy(vehicle_.position())) {
+            speedScale = std::min(speedScale, 0.15f);
+        }
+
+        const float step = car.speed * speedScale * dt;
         if (distance <= std::max(step, 0.05f)) {
             car.cellX += car.dirX;
             car.cellY += car.dirY;
             car.pos = target;
             car.stuck = 0.0f;
 
-            const int straight =
-                world_.roadSurface(car.cellX + car.dirX, car.cellY + car.dirY);
             const int currentSurf = world_.roadSurface(car.cellX, car.cellY);
-            const bool keepStraight =
-                straight > 0 && std::abs(straight - currentSurf) <= 1 &&
-                std::uniform_int_distribution<int>(0, 99)(rng_) < 58;
-            if (!keepStraight) chooseDirection(car, false);
+            int neighbours = 0;
+            for (const auto& dir : dirs) {
+                const int s = world_.roadSurface(car.cellX + dir[0],
+                                                 car.cellY + dir[1]);
+                if (s > 0 && std::abs(s - currentSurf) <= 1) ++neighbours;
+            }
+
+            int options[4];
+            int count = 0;
+            int straight = -1;
+            int left = -1;
+            int right = -1;
+            for (int k = 0; k < 4; ++k) {
+                const int stepX = dirs[k][0];
+                const int stepY = dirs[k][1];
+                if (stepX == -car.dirX && stepY == -car.dirY) continue;
+                const int s = world_.roadSurface(car.cellX + stepX,
+                                                 car.cellY + stepY);
+                if (s <= 0 || std::abs(s - currentSurf) > 1) continue;
+                options[count++] = k;
+                if (stepX == car.dirX && stepY == car.dirY) straight = k;
+                if (stepX == car.dirY && stepY == -car.dirX) left = k;
+                if (stepX == -car.dirY && stepY == car.dirX) right = k;
+            }
+
+            if (count > 0) {
+                int chosen = -1;
+                if (neighbours <= 2 && straight >= 0) {
+                    // Ordinary street: follow the lane instead of swerving
+                    // into every side road.
+                    chosen = straight;
+                } else if (neighbours >= 3) {
+                    // Intersection: mostly straight, sometimes turn.
+                    const int roll = std::uniform_int_distribution<int>(0, 99)(rng_);
+                    if (straight >= 0 && roll < 52) chosen = straight;
+                    else if (left >= 0 && roll < 78) chosen = left;
+                    else if (right >= 0) chosen = right;
+                    else if (straight >= 0) chosen = straight;
+                }
+                if (chosen < 0) {
+                    chosen = options[std::uniform_int_distribution<int>(
+                        0, count - 1)(rng_)];
+                }
+                car.dirX = dirs[chosen][0];
+                car.dirY = dirs[chosen][1];
+            } else if (!chooseDirection(car, true)) {
+                car.stuck += dt;
+            }
         } else if (distance > 0.0001f) {
             car.pos.x += dx / distance * step;
             car.pos.z += dz / distance * step;
             car.pos.y = target.y;
         }
-        car.yaw = std::atan2(static_cast<float>(car.dirX),
-                             -static_cast<float>(car.dirY));
+
+        const float desiredYaw =
+            std::atan2(static_cast<float>(car.dirX),
+                       -static_cast<float>(car.dirY));
+        float yawDiff = desiredYaw - car.yaw;
+        while (yawDiff > kPi) yawDiff -= 2.0f * kPi;
+        while (yawDiff < -kPi) yawDiff += 2.0f * kPi;
+        car.yaw += yawDiff * std::min(1.0f, dt * 12.0f);
     }
 }
 

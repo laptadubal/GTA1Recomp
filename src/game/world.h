@@ -58,6 +58,9 @@ private:
     std::vector<CityChunk> chunks_;
     std::vector<uint8_t> surface_; // highest drawn lid, 0 = no visible top
     std::vector<uint8_t> floorWater_; // 1 = water floor for cells without a top
+    // Nearest authored lid/rotation, used as the base under flat decals.
+    std::vector<uint8_t> baseLid_;
+    std::vector<uint8_t> baseRot_;
     uint8_t baseHeight_ = 1;       // most common street level in this city
 
     void addQuad(std::vector<CityVertex>& v, std::vector<uint32_t>& idx,

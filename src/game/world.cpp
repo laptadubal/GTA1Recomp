@@ -114,7 +114,10 @@ bool World::build(AssetManager& assets, std::string& error) {
     // structural crowns and transparent decals must not raise the ground:
     // otherwise the terrain around them ends up at the wrong level and the
     // sea / park floors no longer meet the streets.
-    surface_.assign(CityMap::kSize * CityMap::kSize, 0);
+    const int cells = CityMap::kSize * CityMap::kSize;
+    surface_.assign(static_cast<size_t>(cells), 0);
+    baseLid_.assign(static_cast<size_t>(cells), 0);
+    baseRot_.assign(static_cast<size_t>(cells), 0);
     int heightHistogram[16] = {0};
     for (int y = 0; y < CityMap::kSize; ++y) {
         for (int x = 0; x < CityMap::kSize; ++x) {
@@ -124,6 +127,9 @@ bool World::build(AssetManager& assets, std::string& error) {
                 const MapBlock* b = map.blockAt(x, y, z);
                 if (!b || b->isAir() || b->lid == 0 || b->isFlat()) continue;
                 topZ = z + 1;
+                const size_t index = static_cast<size_t>(y * CityMap::kSize + x);
+                baseLid_[index] = b->lid;
+                baseRot_[index] = b->rotation();
                 break;
             }
             surface_[y * CityMap::kSize + x] =
@@ -137,11 +143,45 @@ bool World::build(AssetManager& assets, std::string& error) {
     }
     baseHeight_ = static_cast<uint8_t>(baseHeight);
 
+    // Cells that only carry a transparent decal (fence, sign, road paint)
+    // have no surface texture of their own.  Use the nearest authored tile as
+    // their base instead of inventing water/grass, which used to leave blue
+    // and green squares inside blocks.
+    {
+        std::vector<uint8_t> visited(static_cast<size_t>(cells), 0);
+        std::vector<int> queue;
+        queue.reserve(static_cast<size_t>(cells));
+        for (int i = 0; i < cells; ++i) {
+            if (baseLid_[static_cast<size_t>(i)] != 0) {
+                visited[static_cast<size_t>(i)] = 1;
+                queue.push_back(i);
+            }
+        }
+        for (size_t head = 0; head < queue.size(); ++head) {
+            const int index = queue[head];
+            const int x = index % CityMap::kSize;
+            const int y = index / CityMap::kSize;
+            const int nx[4] = {x - 1, x + 1, x, x};
+            const int ny[4] = {y, y, y - 1, y + 1};
+            for (int i = 0; i < 4; ++i) {
+                if (nx[i] < 0 || ny[i] < 0 || nx[i] >= CityMap::kSize ||
+                    ny[i] >= CityMap::kSize)
+                    continue;
+                const size_t next =
+                    static_cast<size_t>(ny[i] * CityMap::kSize + nx[i]);
+                if (visited[next]) continue;
+                visited[next] = 1;
+                baseLid_[next] = baseLid_[static_cast<size_t>(index)];
+                baseRot_[next] = baseRot_[static_cast<size_t>(index)];
+                queue.push_back(static_cast<int>(next));
+            }
+        }
+    }
+
     // Classify every cell as land or water.  Cells without a visible top are
     // then assigned to the surrounding body: open sea connected to the map
     // border becomes water, enclosed park gaps become grass, and gaps next
     // to real water tiles become water as well.
-    const int cells = CityMap::kSize * CityMap::kSize;
     floorWater_.assign(static_cast<size_t>(cells), 0);
     std::vector<uint8_t> known(static_cast<size_t>(cells), 0); // 1 land, 2 water
     for (int y = 0; y < CityMap::kSize; ++y) {
@@ -349,29 +389,44 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
 
             const int n = map.blockCount(cellX, cellY);
 
-            // Cells without a visible top (open sea, park holes, or columns
-            // that only contain shop-sign decals) get a floor at the height
-            // of the nearest real street, so the sea and lawns meet the
-            // pavement instead of forming sunken pits with vertical gaps.
+            // Cells without a visible opaque top (open sea, park holes, or
+            // columns that only contain transparent decals) need a floor.
             if (n <= 0 || surface_[cellY * CityMap::kSize + cellX] == 0) {
-                // Keep every sea / lawn on the city's normal street level;
-                // neighbouring rooftops must not lift it into the air.
-                const int floorY = static_cast<int>(baseHeight_);
-                const bool isWater =
-                    floorWater_[static_cast<size_t>(cellY * CityMap::kSize + cellX)] != 0;
-                TileUV floorUV = isWater ? waterFloor : grassFloor;
+                int floorY = static_cast<int>(baseHeight_);
+                TileUV floorUV;
+                int floorRotation = 0;
+                if (n > 0) {
+                    // A decal-only column: put its base directly underneath
+                    // the decals (at the lowest authored level) and borrow the
+                    // nearest real surface texture.  Using water/grass here
+                    // produced blue and green squares inside city blocks.
+                    int lowest = n - 1;
+                    for (int z = 0; z < n; ++z) {
+                        const MapBlock* b = blockAtOrNull(cellX, cellY, z);
+                        if (b && !b->isAir()) {
+                            lowest = z;
+                            break;
+                        }
+                    }
+                    floorY = lowest;
+                    const size_t index =
+                        static_cast<size_t>(cellY * CityMap::kSize + cellX);
+                    if (baseLid_[index] != 0) {
+                        floorUV = assets.lidUV(baseLid_[index]);
+                        floorRotation = baseRot_[index];
+                    }
+                } else {
+                    const bool isWater =
+                        floorWater_[static_cast<size_t>(cellY * CityMap::kSize + cellX)] != 0;
+                    floorUV = isWater ? waterFloor : grassFloor;
+                }
                 if (floorUV.u1 <= floorUV.u0) floorUV = fallbackRoof;
                 if (floorUV.u1 <= floorUV.u0) floorUV = fallbackRoad;
                 if (floorUV.u1 > floorUV.u0) {
                     const float y = static_cast<float>(floorY);
-                    // addQuad puts v0 on the +z edge; horizontal surfaces must
-                    // show the texture's top row on the -z (north) edge.
-                    const float v = floorUV.v0;
-                    floorUV.v0 = floorUV.v1;
-                    floorUV.v1 = v;
-                    add(Vec3{x0, y, z0}, Vec3{x1, y, z0},
-                        Vec3{x1, y, z1}, Vec3{x0, y, z1}, floorUV, 1.0f,
-                        1.0f, 1.0f, false);
+                    addLid(Vec3{x0, y, z0}, Vec3{x1, y, z0},
+                           Vec3{x1, y, z1}, Vec3{x0, y, z1}, floorUV,
+                           floorRotation, false);
                 }
                 if (n <= 0) continue;
             }
