@@ -787,28 +787,29 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
 
                 if (!flat) continue;
 
-                // Transparent decals can carry walls too (park railings,
-                // hedges, signs).  They stand one unit above the cell's
-                // rendered ground.
-                const Side sides[4] = {
-                    {cellX - 1, cellY, x0, z0, x0, z1, 0.94f, 0},
-                    {cellX + 1, cellY, x1, z1, x1, z0, 0.90f, 1},
-                    {cellX, cellY - 1, x1, z0, x0, z0, 0.84f, 2},
-                    {cellX, cellY + 1, x0, z1, x1, z1, 0.98f, 3},
-                };
-                for (const Side& side : sides) {
-                    const uint8_t tile = sideTileOf(*block, side.dir);
-                    if (!tile) continue;
+                // Transparent decals with side textures are billboards
+                // (picket fences, park railings, shop signs).  Drawing them as
+                // walls on the cell edges makes them edge-on slivers from the
+                // fixed camera, so stand a single camera-facing panel in the
+                // cell instead.
+                uint8_t billboard = 0;
+                if (block->left) billboard = block->left;
+                else if (block->right) billboard = block->right;
+                else if (block->top) billboard = block->top;
+                else if (block->bottom) billboard = block->bottom;
+                if (billboard) {
                     const TileUV uv = flipUV(
-                        assets.sideUV(tile, block->remapIndex()),
+                        assets.sideUV(billboard, block->remapIndex()),
                         block->flipTopBottom(), block->flipLeftRight());
-                    if (uv.u1 <= uv.u0) continue;
-                    const float wallY = static_cast<float>(cellTop);
-                    add(Vec3{side.x0, wallY, side.z0},
-                        Vec3{side.x1, wallY, side.z1},
-                        Vec3{side.x1, wallY + 1.0f, side.z1},
-                        Vec3{side.x0, wallY + 1.0f, side.z0}, uv, side.shade,
-                        side.shade, side.shade, true);
+                    if (uv.u1 > uv.u0) {
+                        const float wallY = static_cast<float>(cellTop);
+                        const float wallH = 0.7f;
+                        const float zc = static_cast<float>(cellY) + 0.5f;
+                        add(Vec3{x0, wallY, zc}, Vec3{x1, wallY, zc},
+                            Vec3{x1, wallY + wallH, zc},
+                            Vec3{x0, wallY + wallH, zc}, uv, 0.95f, 0.95f,
+                            0.95f, true);
+                    }
                 }
             }
 
