@@ -215,6 +215,7 @@ bool Game::loadCity(const std::string& city, std::string& error) {
         error = err;
         return false;
     }
+    world_.setCleanRoads(config_.cleanRoads);
     if (!world_.build(assets_, err)) {
         error = err;
         return false;

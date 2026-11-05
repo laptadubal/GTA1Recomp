@@ -127,59 +127,92 @@ void AssetManager::classifyRoadLids() {
     lidB_.assign(static_cast<size_t>(count), 0);
     if (count <= 1) return;
 
+    // Usage count of each lid on the current map, used to pick the map's own
+    // plain asphalt tile for the clean-road renderer instead of an arbitrary
+    // dark tile (rail yards and roofs can be dark too).
+    std::vector<uint32_t> lidUsage(static_cast<size_t>(count), 0);
+    for (int y = 0; y < CityMap::kSize; ++y) {
+        for (int x = 0; x < CityMap::kSize; ++x) {
+            const int n = map_.blockCount(x, y);
+            for (int z = n - 1; z >= 0; --z) {
+                const MapBlock* block = map_.blockAt(x, y, z);
+                if (!block || block->isAir() || block->isFlat() ||
+                    block->lid == 0)
+                    continue;
+                if (block->lid < count) ++lidUsage[block->lid];
+                break;
+            }
+        }
+    }
+
     std::vector<uint8_t> tile(4096);
     int roads = 0;
     int grass = 0;
+    uint32_t plainestUsage = 0;
     for (int lid = 1; lid < count; ++lid) {
         if (!gry_.tileData(gry_.lidSlot(lid), tile.data())) continue;
 
         int brightness = 0;
-        int yellow = 0;
+        int redSum = 0, greenSum = 0, blueSum = 0;
         int green = 0;
         int blue = 0;
+        int yellow = 0;
         for (uint8_t index : tile) {
             const int r = gry_.palette.rgb[index * 3 + 0];
             const int g = gry_.palette.rgb[index * 3 + 1];
             const int b = gry_.palette.rgb[index * 3 + 2];
             brightness += (r + g + b) / 3;
-            int rg = r - g;
-            if (rg < 0) rg = -rg;
-            if (r > 120 && g > 90 && b < 90 && rg < 80) ++yellow;
+            redSum += r;
+            greenSum += g;
+            blueSum += b;
             if (g > r + 15 && g > b + 15) ++green;
             if (b > r + 20 && b > g + 10) ++blue;
+            if (r > 130 && g > 100 && b < 90) ++yellow;
         }
         const int mean = brightness / 4096;
-        {
-            int sr = 0, sg = 0, sb = 0;
-            for (uint8_t index : tile) {
-                sr += gry_.palette.rgb[index * 3 + 0];
-                sg += gry_.palette.rgb[index * 3 + 1];
-                sb += gry_.palette.rgb[index * 3 + 2];
-            }
-            lidR_[static_cast<size_t>(lid)] =
-                static_cast<uint8_t>(std::clamp(sr / 4096, 0, 255));
-            lidG_[static_cast<size_t>(lid)] =
-                static_cast<uint8_t>(std::clamp(sg / 4096, 0, 255));
-            lidB_[static_cast<size_t>(lid)] =
-                static_cast<uint8_t>(std::clamp(sb / 4096, 0, 255));
-        }
-        // Asphalt is dark and usually carries yellow lane markings.  Water
-        // and grass are excluded by their dominant hues.
-        if (blue > 1500 && mean > 55) {
+        const int meanR = redSum / 4096;
+        const int meanG = greenSum / 4096;
+        const int meanB = blueSum / 4096;
+        lidR_[static_cast<size_t>(lid)] =
+            static_cast<uint8_t>(std::clamp(meanR, 0, 255));
+        lidG_[static_cast<size_t>(lid)] =
+            static_cast<uint8_t>(std::clamp(meanG, 0, 255));
+        lidB_[static_cast<size_t>(lid)] =
+            static_cast<uint8_t>(std::clamp(meanB, 0, 255));
+
+        // Asphalt is a dark, low-saturation tile.  Lane paint must not be
+        // required: GTA composes a road from alternating plain-asphalt and
+        // marked-asphalt cells, so testing for yellow pixels classifies half
+        // of every lane as "not a road" (broken traffic, collision and map).
+        const bool greenish = green > 900 && green > blue * 2 && meanG > meanR;
+        const bool blueish = blue > 1200 && blue > green + 150;
+        const int spread = std::max({meanR, meanG, meanB}) -
+                           std::min({meanR, meanG, meanB});
+        // Asphalt is neutral grey: brown planters (R noticeably above G) and
+        // warm brick roofs must not be treated as road.
+        const bool neutral = std::abs(meanR - meanG) <= 10 &&
+                             meanG - meanB <= 25 && meanB <= meanG + 5;
+        if (blueish && mean > 55) {
             lidIsWater_[static_cast<size_t>(lid)] = 1;
             if (waterFallbackLid_ == 1) waterFallbackLid_ = lid;
         }
-        if (mean < 90 && yellow > 40 && green < 200 && blue < 200) {
+        if (!greenish && !blueish && neutral && mean >= 45 && mean < 93 &&
+            spread < 26) {
             lidIsRoad_[static_cast<size_t>(lid)] = 1;
             if (roads == 0) roadFallbackLid_ = lid;
             ++roads;
-        } else if (roofFallbackLid_ == 1 && mean >= 90 && green < 200 &&
-                   blue < 200) {
+            // A plain asphalt candidate: little lane paint and an asphalt-like
+            // dark grey average; prefer the tile the map uses most.
+            if (yellow < 30 && spread < 26 && mean >= 45 &&
+                lidUsage[static_cast<size_t>(lid)] >= plainestUsage) {
+                plainestUsage = lidUsage[static_cast<size_t>(lid)];
+                plainRoadLid_ = lid;
+            }
+        } else if (roofFallbackLid_ == 1 && mean >= 96 && !greenish &&
+                   !blueish) {
             // First neutral grey/concrete tile makes a reasonable roof.
             roofFallbackLid_ = lid;
         }
-        // Lush green tile without much asphalt colouring; used as the floor
-        // for empty map cells on land.
         if (green > 1200 && green > blue * 2 && mean > 35) {
             lidIsGrass_[static_cast<size_t>(lid)] = 1;
             if (grass == 0) grassFallbackLid_ = lid;
@@ -341,8 +374,27 @@ bool AssetManager::buildAtlas(std::string& error) {
     const int rows = (slots + cols - 1) / cols;
     variantStride_ = cols * cell;
     atlasW_ = cols * cell * kVariants;
-    atlasH_ = rows * cell;
+    atlasH_ = (rows + 1) * cell;
     std::vector<uint8_t> pixels(static_cast<size_t>(atlasW_) * atlasH_ * 4, 0);
+
+    // One 8x8 white patch in the spare row feeds the procedural road paint.
+    {
+        const int wy = rows * cell;
+        for (int y = 0; y < 8; ++y) {
+            for (int x = 0; x < 8; ++x) {
+                const size_t o =
+                    (static_cast<size_t>(wy + y) * atlasW_ + x) * 4;
+                pixels[o + 0] = 255;
+                pixels[o + 1] = 255;
+                pixels[o + 2] = 255;
+                pixels[o + 3] = 255;
+            }
+        }
+        whiteUV_.u0 = 0.5f / atlasW_;
+        whiteUV_.v0 = (wy + 0.5f) / atlasH_;
+        whiteUV_.u1 = 7.5f / atlasW_;
+        whiteUV_.v1 = (wy + 7.5f) / atlasH_;
+    }
 
     sideUVs_.resize(sideSlots_ + 1);
     lidUVs_.resize(lidSlots_ + 1);

@@ -46,6 +46,8 @@ int World::roadSurface(int cellX, int cellY) const {
         const MapBlock* block = map.blockAt(cellX, cellY, z);
         if (!block || block->isAir()) continue;
         if (block->isFlat() || block->lid == 0) continue;
+        // Roofs can be asphalt-coloured; only ground-level lids are road.
+        if (z + 1 > static_cast<int>(baseHeight_) + 1) return 0;
         if (!assets_->isRoadTile(block->lid)) return 0;
         return visualHeight(z + 1);
     }
@@ -85,30 +87,34 @@ bool World::isDrivable(float worldX, float worldZ) const {
 }
 
 Vec3 World::findSpawn(int preferredX, int preferredY) const {
-    // Most NYC streets sit on the second block level; prefer those with
-    // plenty of drivable neighbours, then relax the constraints step by step.
+    // Start on a straight street rather than in a wide plaza or car park:
+    // the first pass wants exactly two opposite road neighbours, the second a
+    // junction, the last any drivable cell near the preferred point.
     for (int pass = 0; pass < 3; ++pass) {
-        const bool requireGround = pass == 0;
-        const bool requireNeighbours = pass < 2;
-
         for (int radius = 0; radius < 160; ++radius) {
             for (int dy = -radius; dy <= radius; ++dy) {
                 for (int dx = -radius; dx <= radius; ++dx) {
                     if (std::max(std::abs(dx), std::abs(dy)) != radius) continue;
                     const int x = preferredX + dx;
                     const int y = preferredY + dy;
-                    if (x < 0 || y < 0 || x >= CityMap::kSize ||
-                        y >= CityMap::kSize)
+                    if (x < 1 || y < 1 || x >= CityMap::kSize - 1 ||
+                        y >= CityMap::kSize - 1)
                         continue;
                     const int surface = roadSurface(x, y);
                     if (surface <= 0) continue;
-                    if (requireGround && surface != 2) continue;
-                    if (requireNeighbours) {
-                        int roads = 0;
-                        for (int ny = -1; ny <= 1; ++ny)
-                            for (int nx = -1; nx <= 1; ++nx)
-                                if (roadSurface(x + nx, y + ny) > 0) ++roads;
-                        if (roads < 6) continue;
+                    const bool rn = roadSurface(x, y - 1) > 0;
+                    const bool rs = roadSurface(x, y + 1) > 0;
+                    const bool rw = roadSurface(x - 1, y) > 0;
+                    const bool re = roadSurface(x + 1, y) > 0;
+                    if (pass == 0) {
+                        const bool straight =
+                            (rn && rs && !rw && !re) ||
+                            (rw && re && !rn && !rs);
+                        if (!straight) continue;
+                    } else if (pass == 1) {
+                        const int roads = (rn ? 1 : 0) + (rs ? 1 : 0) +
+                                          (rw ? 1 : 0) + (re ? 1 : 0);
+                        if (roads < 3) continue;
                     }
                     return Vec3{x + 0.5f, static_cast<float>(surface), y + 0.5f};
                 }
@@ -523,6 +529,100 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
         int dir;
     };
 
+    // Procedural road paint used by the clean-road renderer: the baked lane
+    // tiles are replaced with plain asphalt and continuous paint is laid over
+    // them, so dashes align between lanes and intersections stay uncluttered.
+    auto roadAt = [&](int x, int y) {
+        return roadSurface(x, y) > 0;
+    };
+    auto paintRect = [&](float ax, float az, float bx, float bz, float y,
+                         float r, float g, float b) {
+        add(Vec3{ax, y, az}, Vec3{bx, y, az}, Vec3{bx, y, bz},
+            Vec3{ax, y, bz}, assets_->whiteUV(), r, g, b, false);
+    };
+    auto addRoadPaint = [&](int cx, int cz, float lidY) {
+        const float x0 = static_cast<float>(cx);
+        const float x1 = x0 + 1.0f;
+        const float z0 = static_cast<float>(cz);
+        const float z1 = z0 + 1.0f;
+        const bool rn = roadAt(cx, cz - 1);
+        const bool rs = roadAt(cx, cz + 1);
+        const bool rw = roadAt(cx - 1, cz);
+        const bool re = roadAt(cx + 1, cz);
+        const int count = (rn ? 1 : 0) + (rs ? 1 : 0) + (rw ? 1 : 0) +
+                          (re ? 1 : 0);
+        const float inset = 0.055f;
+        const float line = 0.032f;
+        const float y = lidY + 0.02f;
+        const float pr = 0.93f, pg = 0.76f, pb = 0.12f;
+
+        // Continuous edge paint wherever the road meets pavement or a wall.
+        // No inset along the edge itself so neighbouring cells join cleanly.
+        if (!rn)
+            paintRect(x0, z0 + inset, x1, z0 + inset + line, y, pr, pg, pb);
+        if (!rs)
+            paintRect(x0, z1 - inset - line, x1, z1 - inset, y, pr, pg, pb);
+        if (!rw)
+            paintRect(x0 + inset, z0, x0 + inset + line, z1, y, pr, pg, pb);
+        if (!re)
+            paintRect(x1 - inset - line, z0, x1 - inset, z1, y, pr, pg, pb);
+
+        // Centre and lane paint only along straight stretches of a street
+        // (not inside junctions or plazas).
+        if (count != 2) return;
+        if (!((rn && rs) || (rw && re))) return;
+        const bool vertical = rn && rs;
+        int lo = vertical ? cx : cz;
+        int hi = lo;
+        while (lo > 0) {
+            const bool road = vertical ? roadAt(lo - 1, cz) : roadAt(cx, lo - 1);
+            if (!road || hi - lo >= 11) break;
+            --lo;
+        }
+        while (hi < CityMap::kSize - 1) {
+            const bool road = vertical ? roadAt(hi + 1, cz) : roadAt(cx, hi + 1);
+            if (!road || hi - lo >= 11) break;
+            ++hi;
+        }
+        const float low = static_cast<float>(lo);
+        const float high = static_cast<float>(hi + 1);
+        const float centre = (low + high) * 0.5f;
+        const float here = static_cast<float>(vertical ? cx : cz);
+        const bool onEven = ((vertical ? cz : cx) & 1) == 0;
+        if (!onEven) return;
+
+        auto dashAlong = [&](float position, float width, bool split) {
+            if (split) {
+                paintRect(position - width * 0.5f - 0.045f,
+                          vertical ? z0 + 0.14f : position - width * 0.5f - 0.045f,
+                          position - 0.045f,
+                          vertical ? z1 - 0.14f : position + width * 0.5f + 0.045f,
+                          y, pr, pg, pb);
+            }
+        };
+        (void)dashAlong;
+
+        // Lane separators every two cells out from the centre.
+        for (int offset = 0; offset <= 8; offset += 2) {
+            for (int side = -1; side <= 1; side += 2) {
+                if (offset == 0 && side == 1) continue;
+                const float position = centre + side * offset;
+                if (position < low + 0.6f || position > high - 0.6f) continue;
+                if (std::floor(position) != here) continue;
+                const float width = offset == 0 ? 0.045f : 0.04f;
+                if (vertical) {
+                    paintRect(position - width * 0.5f, z0 + 0.14f,
+                              position + width * 0.5f, z1 - 0.14f, y, pr, pg,
+                              pb);
+                } else {
+                    paintRect(x0 + 0.14f, position - width * 0.5f,
+                              x1 - 0.14f, position + width * 0.5f, y, pr, pg,
+                              pb);
+                }
+            }
+        }
+    };
+
     for (int ly = 0; ly < kChunkSize; ++ly) {
         const int cellY = cy * kChunkSize + ly;
         for (int lx = 0; lx < kChunkSize; ++lx) {
@@ -591,13 +691,48 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
                             // and keep real building roofs at their height.
                             lidY = static_cast<float>(cellTop);
                         }
-                        const uint8_t flips =
-                            static_cast<uint8_t>((block->flipTopBottom() ? 1 : 0) |
-                                                 (block->flipLeftRight() ? 2 : 0));
-                        addLid(Vec3{x0, lidY, z0}, Vec3{x1, lidY, z0},
-                               Vec3{x1, lidY, z1}, Vec3{x0, lidY, z1}, uv,
-                               static_cast<int>(block->rotation()), flat,
-                               flips);
+                        // Only side textures use the mirror flags; lid tiles
+                        // are oriented by the rotation bits alone.  Mirroring
+                        // a road lid flips the dash phase and breaks the line
+                        // at every cell boundary.
+                        // Ground-level road lids.  Intersections always get a
+                        // plain asphalt top so the authored edge tiles cannot
+                        // paint disconnected hooks across the junction; the
+                        // optional clean-road mode also replaces the lane
+                        // tiles on straight stretches with procedural paint.
+                        const bool isGroundRoad =
+                            z + 1 == columnSurface &&
+                            columnSurface <= static_cast<int>(baseHeight_) + 1 &&
+                            assets.isRoadTile(block->lid);
+                        bool wideOpen = false;
+                        if (cleanRoads_ && isGroundRoad) {
+                            int runX = 1, runZ = 1;
+                            while (runX < 12 && roadAt(cellX - runX, cellY))
+                                ++runX;
+                            while (runX < 12 && roadAt(cellX + runX, cellY))
+                                ++runX;
+                            while (runZ < 12 && roadAt(cellX, cellY - runZ))
+                                ++runZ;
+                            while (runZ < 12 && roadAt(cellX, cellY + runZ))
+                                ++runZ;
+                            wideOpen = std::min(runX, runZ) > 8;
+                        }
+                        const bool groundRoad =
+                            isGroundRoad && cleanRoads_ && !wideOpen;
+                        if (groundRoad) {
+                            const TileUV plain = assets.lidUV(
+                                assets.plainRoadLid(), block->remapIndex());
+                            addLid(Vec3{x0, lidY, z0}, Vec3{x1, lidY, z0},
+                                   Vec3{x1, lidY, z1}, Vec3{x0, lidY, z1},
+                                   plain,
+                                   static_cast<int>(block->rotation()), false);
+                            addRoadPaint(cellX, cellY, lidY);
+                        } else {
+                            addLid(Vec3{x0, lidY, z0}, Vec3{x1, lidY, z0},
+                                   Vec3{x1, lidY, z1}, Vec3{x0, lidY, z1},
+                                   uv, static_cast<int>(block->rotation()),
+                                   flat);
+                        }
                     }
                 }
 

@@ -39,6 +39,7 @@ public:
     World(const World&) = delete;
     World& operator=(const World&) = delete;
 
+    void setCleanRoads(bool enabled) { cleanRoads_ = enabled; }
     bool build(AssetManager& assets, std::string& error);
     void destroy();
 
@@ -70,6 +71,7 @@ private:
     std::vector<uint8_t> baseLid_;
     std::vector<uint8_t> baseRot_;
     uint8_t baseHeight_ = 1;       // most common street level in this city
+    bool cleanRoads_ = true;
 
     void addQuad(std::vector<CityVertex>& v, std::vector<uint32_t>& idx,
                  const Vec3& p0, const Vec3& p1, const Vec3& p2, const Vec3& p3,

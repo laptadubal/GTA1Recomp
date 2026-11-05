@@ -40,6 +40,10 @@ public:
     // remap selects one of the four palette variants stored in the atlas.
     TileUV sideUV(int index1Based, int remap = 0) const;
     TileUV lidUV(int index1Based, int remap = 0) const;
+    // A pure-white patch in the atlas, used for the procedural road paint.
+    const TileUV& whiteUV() const { return whiteUV_; }
+    // Plain asphalt lid (no lane paint) used by the clean-road renderer.
+    int plainRoadLid() const { return plainRoadLid_; }
 
     // True for lid tiles that look like asphalt roads (dark with lane
     // markings).  Classified from the palette at load time so all three
@@ -94,6 +98,8 @@ private:
     std::vector<TileUV> lidUVs_;
     std::vector<TileUV> auxUVs_;
     int variantStride_ = 0; // pixels per palette variant in the atlas
+    TileUV whiteUV_{};
+    int plainRoadLid_ = 1;
     std::vector<uint8_t> lidIsRoad_;
     std::vector<uint8_t> lidIsWater_;
     std::vector<uint8_t> lidIsGrass_;
