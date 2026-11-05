@@ -44,6 +44,10 @@ public:
 
     int surfaceHeight(int cellX, int cellY) const;
     int roadSurface(int cellX, int cellY) const;
+    // Rendered height of a ground column: water, land, pavements and bridge
+    // decks are flattened to the city base height, buildings keep their own.
+    int visualHeight(int surface) const;
+    int baseHeight() const { return baseHeight_; }
     bool isDrivable(float worldX, float worldZ) const;
     Vec3 findSpawn(int preferredX = 108, int preferredY = 108) const;
 

@@ -42,6 +42,8 @@ struct MapObject {
 
 struct CityMap {
     static constexpr int kSize = 256;
+    // Every CMP column holds at most six 1-unit levels.
+    static constexpr int kMaxLevels = 6;
 
     uint32_t version = 0;
     uint8_t style = 0;
@@ -60,7 +62,12 @@ struct CityMap {
         if (x < 0 || y < 0 || x >= kSize || y >= kSize) return 0;
         uint32_t idx = base[x * kSize + y] / 2;
         if (idx >= column.size()) return 0;
-        int n = column[idx];
+        // CMP stores the number of *empty* levels above the column, not the
+        // number of blocks.  GTA1 columns are six levels tall, so a stored
+        // value of 3 means three blocks and a value of 0 means six.
+        const int empty = column[idx];
+        const int n = kMaxLevels - empty;
+        if (n <= 0) return 0;
         if (idx + static_cast<uint32_t>(n) >= column.size()) return 0;
         return n;
     }
@@ -70,7 +77,7 @@ struct CityMap {
         int n = blockCount(x, y);
         if (z < 0 || z >= n) return nullptr;
         uint32_t idx = base[x * kSize + y] / 2;
-        // entries after the count are stored top-to-bottom
+        // entries after the empty-level count are stored top-to-bottom
         uint16_t blockIndex = column[idx + n - z];
         if (blockIndex >= blocks.size()) return nullptr;
         return &blocks[blockIndex];

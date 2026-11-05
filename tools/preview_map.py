@@ -86,8 +86,8 @@ base_rot = [[0] * N for _ in range(N)]
 block_counts = [[0] * N for _ in range(N)]
 for y in range(N):
     for x in range(N):
+        n = c.num_blocks(x, y)
         b = c.base[x * 256 + y] // 2
-        n = c.column[b]
         block_counts[y][x] = n
         for z in range(n - 1, -1, -1):
             bi = c.column[b + n - z]

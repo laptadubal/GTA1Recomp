@@ -83,10 +83,17 @@ class CMP:
         self.routeOff=o; o += self.routeSize
         self.locOff=o; o += 36*3
         self.navOff=o
-    def block_at(self,x,y,z):
-        # z == 0 is the bottom block of the column.
+    def num_blocks(self,x,y):
+        # The stored value is the number of *empty* levels above the column
+        # (GTA1 columns are six levels tall), not the block count.
         b = self.base[x*256+y]//2
-        n = self.column[b]
+        return 6 - self.column[b]
+
+    def block_at(self,x,y,z):
+        # z == 0 is the bottom block of the column; entries are stored
+        # top-to-bottom after the empty-level count.
+        b = self.base[x*256+y]//2
+        n = self.num_blocks(x,y)
         return self.blocks[self.column[b+n-z]]
 
 if __name__ == '__main__':

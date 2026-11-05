@@ -18,10 +18,17 @@ void World::destroy() {
     chunks_.clear();
 }
 
+int World::visualHeight(int surface) const {
+    if (surface <= 0) return baseHeight_;
+    return surface <= static_cast<int>(baseHeight_) + 1
+               ? static_cast<int>(baseHeight_)
+               : surface;
+}
+
 int World::surfaceHeight(int cellX, int cellY) const {
     if (cellX < 0 || cellY < 0 || cellX >= CityMap::kSize || cellY >= CityMap::kSize)
-        return 0;
-    return surface_[cellY * CityMap::kSize + cellX];
+        return baseHeight_;
+    return visualHeight(surface_[cellY * CityMap::kSize + cellX]);
 }
 
 int World::roadSurface(int cellX, int cellY) const {
@@ -39,7 +46,8 @@ int World::roadSurface(int cellX, int cellY) const {
         const MapBlock* block = map.blockAt(cellX, cellY, z);
         if (!block || block->isAir()) continue;
         if (block->isFlat() || block->lid == 0) continue;
-        return assets_->isRoadTile(block->lid) ? z + 1 : 0;
+        if (!assets_->isRoadTile(block->lid)) return 0;
+        return visualHeight(z + 1);
     }
     return 0;
 }
@@ -413,9 +421,65 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
         return map.blockAt(x, y, z);
     };
 
-    auto solidAt = [&](int x, int y, int z) {
-        const MapBlock* b = blockAtOrNull(x, y, z);
-        return b && !b->isAir();
+    // Ground-level surfaces (water, land, pavements, bridge decks) are
+    // rendered flat at the city's base height, exactly like the original
+    // game: a one-unit CMP step between a road and its pavement is a curb,
+    // not a wall.  Only columns that rise clearly above the base height are
+    // extruded into buildings.
+    auto visualHeight = [&](int surface) {
+        if (surface <= 0) return static_cast<int>(baseHeight_);
+        return surface <= static_cast<int>(baseHeight_) + 1
+                   ? static_cast<int>(baseHeight_)
+                   : surface;
+    };
+    auto visibleHeight = [&](int x, int y) {
+        if (x < 0 || y < 0 || x >= CityMap::kSize || y >= CityMap::kSize) {
+            return static_cast<int>(baseHeight_);
+        }
+        const size_t index = static_cast<size_t>(y * CityMap::kSize + x);
+        return visualHeight(surface_[index]);
+    };
+    auto sideTileOf = [](const MapBlock& b, int dir) -> uint8_t {
+        switch (dir) {
+        case 0: return b.left;
+        case 1: return b.right;
+        case 2: return b.top;
+        default: return b.bottom;
+        }
+    };
+    // Nearest authored wall texture for one side of a column.  GTA1 only
+    // stores the facade on the block that owns it; taller columns repeat the
+    // same texture for the floors below/above.
+    auto pickSideTile = [&](int x, int y, int n, int z, int dir) -> uint8_t {
+        for (int distance = 0; distance < 6; ++distance) {
+            const int below = z - distance;
+            if (below >= 0 && below < n) {
+                const MapBlock* b = blockAtOrNull(x, y, below);
+                if (b) {
+                    const uint8_t tile = sideTileOf(*b, dir);
+                    if (tile && assets_->sideUV(tile).u1 > assets_->sideUV(tile).u0)
+                        return tile;
+                }
+            }
+            if (distance == 0) continue;
+            const int above = z + distance;
+            if (above >= 0 && above < n) {
+                const MapBlock* b = blockAtOrNull(x, y, above);
+                if (b) {
+                    const uint8_t tile = sideTileOf(*b, dir);
+                    if (tile && assets_->sideUV(tile).u1 > assets_->sideUV(tile).u0)
+                        return tile;
+                }
+            }
+        }
+        return 0;
+    };
+
+    struct Side {
+        int nx, ny;
+        float x0, z0, x1, z1;
+        float shade;
+        int dir;
     };
 
     for (int ly = 0; ly < kChunkSize; ++ly) {
@@ -428,44 +492,44 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
             const float z1 = z0 + 1.0f;
 
             const int n = map.blockCount(cellX, cellY);
+            const size_t cellIndex =
+                static_cast<size_t>(cellY * CityMap::kSize + cellX);
+            const int columnSurface = surface_[cellIndex];
+            const int cellTop = visualHeight(columnSurface);
 
             // Cells without a visible opaque top (open sea, park holes, or
             // columns that only contain transparent decals) need a floor.
-            if (n <= 0 || surface_[cellY * CityMap::kSize + cellX] == 0) {
-                int floorY = static_cast<int>(baseHeight_);
+            if (n <= 0 || columnSurface == 0) {
+                const float floorY = static_cast<float>(baseHeight_);
                 TileUV floorUV;
                 int floorRotation = 0;
                 if (n > 0) {
-                    // A decal-only column: keep its base at street level and
-                    // borrow the most common neighbouring surface texture, so
-                    // a crosswalk sits on asphalt and a fence sits on grass.
-                    floorY = static_cast<int>(baseHeight_);
-                    const size_t index =
-                        static_cast<size_t>(cellY * CityMap::kSize + cellX);
-                    if (baseLid_[index] != 0) {
-                        floorUV = assets.lidUV(baseLid_[index]);
-                        floorRotation = baseRot_[index];
+                    // A decal-only column: borrow the most common neighbouring
+                    // surface texture, so a crosswalk sits on asphalt and a
+                    // fence sits on grass.
+                    if (baseLid_[cellIndex] != 0) {
+                        floorUV = assets.lidUV(baseLid_[cellIndex]);
+                        floorRotation = baseRot_[cellIndex];
                     }
                 } else {
-                    const bool isWater =
-                        floorWater_[static_cast<size_t>(cellY * CityMap::kSize + cellX)] != 0;
+                    const bool isWater = floorWater_[cellIndex] != 0;
                     floorUV = isWater ? waterFloor : grassFloor;
                 }
                 if (floorUV.u1 <= floorUV.u0) floorUV = fallbackRoof;
                 if (floorUV.u1 <= floorUV.u0) floorUV = fallbackRoad;
                 if (floorUV.u1 > floorUV.u0) {
-                    const float y = static_cast<float>(floorY) -
-                                    (n > 0 ? 0.01f : 0.0f);
-                    addLid(Vec3{x0, y, z0}, Vec3{x1, y, z0},
-                           Vec3{x1, y, z1}, Vec3{x0, y, z1}, floorUV,
+                    addLid(Vec3{x0, floorY, z0}, Vec3{x1, floorY, z0},
+                           Vec3{x1, floorY, z1}, Vec3{x0, floorY, z1}, floorUV,
                            floorRotation, false);
                 }
                 if (n <= 0) continue;
             }
 
-            // Draw every block of the column, not just the top one: GTA1
-            // stores trees, road paint and similar decals as transparent
-            // "flat" blocks stacked on top of the real surface.
+            // Draw every block of the column: GTA1 stores trees, road paint
+            // and similar decals as transparent "flat" blocks stacked on top
+            // of the real surface.  Flat overlays are clamped to the cell's
+            // visual top so road markings lie on the tarmac instead of
+            // floating one unit above it.
             for (int z = 0; z < n; ++z) {
                 const MapBlock* block = blockAtOrNull(cellX, cellY, z);
                 if (!block || block->isAir()) continue;
@@ -476,53 +540,70 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
 
                 if (block->lid) {
                     const TileUV uv = assets.lidUV(block->lid);
-                    // Only draw textures that actually exist in the archive;
-                    // inventing a fallback here hides the real city layout.
                     if (uv.u1 > uv.u0) {
-                        const bool decalOnly =
-                            n > 0 &&
-                            surface_[cellY * CityMap::kSize + cellX] == 0;
-                        const float lidY =
-                            (flat && decalOnly)
-                                ? std::max(y1, static_cast<float>(baseHeight_))
-                                : y1;
+                        float lidY = y1;
+                        if (flat) {
+                            lidY = static_cast<float>(cellTop);
+                        } else if (z + 1 == columnSurface) {
+                            // The column's visible top: flatten ground levels
+                            // and keep real building roofs at their height.
+                            lidY = static_cast<float>(cellTop);
+                        }
                         addLid(Vec3{x0, lidY, z0}, Vec3{x1, lidY, z0},
                                Vec3{x1, lidY, z1}, Vec3{x0, lidY, z1}, uv,
                                static_cast<int>(block->rotation()), flat);
                     }
                 }
 
-                struct Side {
-                    int nx, ny;
-                    float x0, z0, x1, z1;
-                    float shade;
-                    uint8_t tile;
-                };
-                const Side sides[4] = {
-                    {cellX - 1, cellY, x0, z0, x0, z1, 0.94f, block->left},
-                    {cellX + 1, cellY, x1, z1, x1, z0, 0.90f, block->right},
-                    {cellX, cellY - 1, x1, z0, x0, z0, 0.84f, block->top},
-                    {cellX, cellY + 1, x0, z1, x1, z1, 0.98f, block->bottom},
-                };
+                if (!flat) continue;
 
+                // Transparent decals can carry walls too (park railings,
+                // hedges, signs).  They stand one unit above the cell's
+                // rendered ground.
+                const Side sides[4] = {
+                    {cellX - 1, cellY, x0, z0, x0, z1, 0.94f, 0},
+                    {cellX + 1, cellY, x1, z1, x1, z0, 0.90f, 1},
+                    {cellX, cellY - 1, x1, z0, x0, z0, 0.84f, 2},
+                    {cellX, cellY + 1, x0, z1, x1, z1, 0.98f, 3},
+                };
                 for (const Side& side : sides) {
-                    if (solidAt(side.nx, side.ny, z)) continue;
-                    TileUV uv = side.tile ? assets.sideUV(side.tile) : TileUV{};
-                    if (uv.u1 <= uv.u0) {
-                        // Blocks without their own wall texture are the
-                        // invisible structural "crowns" stacked above the
-                        // road deck: they must not get a wall.  Real solid
-                        // blocks (those carrying a lid) still need a facade
-                        // so that buildings look solid from the tilted view.
-                        if (flat || block->lid == 0) continue;
-                        uv = fallbackWall;
-                    }
+                    const uint8_t tile = sideTileOf(*block, side.dir);
+                    if (!tile) continue;
+                    const TileUV uv = assets.sideUV(tile);
                     if (uv.u1 <= uv.u0) continue;
-                    add(Vec3{side.x0, y0, side.z0},
-                        Vec3{side.x1, y0, side.z1},
-                        Vec3{side.x1, y1, side.z1},
-                        Vec3{side.x0, y1, side.z0}, uv, side.shade,
-                        side.shade, side.shade, flat);
+                    const float wallY = static_cast<float>(cellTop);
+                    add(Vec3{side.x0, wallY, side.z0},
+                        Vec3{side.x1, wallY, side.z1},
+                        Vec3{side.x1, wallY + 1.0f, side.z1},
+                        Vec3{side.x0, wallY + 1.0f, side.z0}, uv, side.shade,
+                        side.shade, side.shade, true);
+                }
+            }
+
+            // Solid facades: close every height step from the neighbour's
+            // rendered ground up to this column's roof.  Textures are taken
+            // from the authored blocks level by level, with a generic wall
+            // as the last resort so buildings never appear as floating roofs.
+            if (cellTop <= static_cast<int>(baseHeight_)) continue;
+            const Side sides[4] = {
+                {cellX - 1, cellY, x0, z0, x0, z1, 0.94f, 0},
+                {cellX + 1, cellY, x1, z1, x1, z0, 0.90f, 1},
+                {cellX, cellY - 1, x1, z0, x0, z0, 0.84f, 2},
+                {cellX, cellY + 1, x0, z1, x1, z1, 0.98f, 3},
+            };
+            for (const Side& side : sides) {
+                const int neighbourTop = visibleHeight(side.nx, side.ny);
+                if (cellTop <= neighbourTop) continue;
+                for (int z = neighbourTop; z < cellTop; ++z) {
+                    const uint8_t tile = pickSideTile(cellX, cellY, n, z, side.dir);
+                    TileUV uv = tile ? assets.sideUV(tile) : fallbackWall;
+                    if (uv.u1 <= uv.u0) uv = fallbackWall;
+                    if (uv.u1 <= uv.u0) continue;
+                    add(Vec3{side.x0, static_cast<float>(z), side.z0},
+                        Vec3{side.x1, static_cast<float>(z), side.z1},
+                        Vec3{side.x1, static_cast<float>(z + 1), side.z1},
+                        Vec3{side.x0, static_cast<float>(z + 1), side.z0}, uv,
+                        side.shade, side.shade, side.shade, false);
                 }
             }
         }

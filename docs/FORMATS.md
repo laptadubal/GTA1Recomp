@@ -30,12 +30,21 @@ Layout after the header:
 
 ### Column lookup
 
-`column[base[x * 256 + y] / 2]` holds `n`, the number of stacked blocks stored
-after it. The blocks are stored **top to bottom**, so the bottom block (level 0)
-is `column[index + n]` and the top block is `column[index + 1]`.
+`column[base[x * 256 + y] / 2]` holds the number of **empty levels above the
+column**, not the block count.  GTA1 columns are six levels tall, so the real
+height is `n = 6 - column[index]`; a value of 0 means six blocks and 3 means
+three.  The blocks are stored **top to bottom** after that value, so the bottom
+block (level 0) is `column[index + n]` and the top block is `column[index + 1]`.
 
 `blockAt(x, y, z)` in `src/data/formats.h` uses `z = 0` for the lowest block:
 `column[index + n - z]`.
+
+Reading the stored value as a block count (an easy mistake) truncates every
+column whose value is 1 or 2 and over-reads columns whose value is 4 or 5,
+which makes road surfaces and building heights come from the wrong level.
+The engine renders water, land, pavements and bridge decks at one flat base
+height (`World::visualHeight`) and extrudes only columns that rise clearly
+above it, which matches the original's flat-ground look.
 
 ### Block record (8 bytes)
 
