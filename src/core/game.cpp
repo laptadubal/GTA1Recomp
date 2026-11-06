@@ -266,8 +266,10 @@ GLuint Game::loadRawTexture(const std::string& path, int width, int height) {
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, width, height, 0, GL_RGB,
                  GL_UNSIGNED_BYTE, data.data());
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    // Pixel art: nearest keeps logos and menu frames crisp at any window
+    // size instead of smearing them into a blur.
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glBindTexture(GL_TEXTURE_2D, 0);
@@ -313,8 +315,9 @@ GLuint Game::loadIndexedTexture(const std::string& indexFile,
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA,
                  GL_UNSIGNED_BYTE, rgba.data());
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    // 640x480 VGA frames: nearest-neighbor upscale like the original.
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glBindTexture(GL_TEXTURE_2D, 0);
@@ -395,7 +398,22 @@ void Game::setStatus(const std::string& text) {
 }
 
 void Game::resetCar() {
-    const Vec3 spawn = world_.findSpawn(108, 150);
+    // Start downtown, as in the original: search outward from the centre
+    // of the map for the nearest proper street instead of a fixed spot that
+    // may sit in a sparse corner.
+    const std::string& city = assets_.cityName();
+    int preferredX = 128, preferredY = 128;
+    if (city == "NYC") {
+        preferredX = 128;
+        preferredY = 122;
+    } else if (city == "MIAMI") {
+        preferredX = 122;
+        preferredY = 128;
+    } else if (city == "SANB") {
+        preferredX = 128;
+        preferredY = 132;
+    }
+    const Vec3 spawn = world_.findSpawn(preferredX, preferredY);
     const int cx = static_cast<int>(std::floor(spawn.x));
     const int cz = static_cast<int>(std::floor(spawn.z));
     const int base = world_.roadSurface(cx, cz);
@@ -1789,6 +1807,11 @@ void Game::update(float dt, InputManager& input, AudioManager& audio) {
         audio.setPaused(true);
         break;
     }
+
+    // The original has no music during free roam - the streets live by
+    // ambient wind and distant traffic noise alone.
+    audio.setAmbient(
+        screen_ == Screen::Playing || screen_ == Screen::CityMap ? 1.0f : 0.0f);
 }
 
 void Game::handleGlobalInput(InputManager& input, AudioManager& audio) {
@@ -1864,6 +1887,22 @@ void Game::updateCutscene(float dt, InputManager& input, AudioManager& audio) {
     if (!cutsceneMusicStarted_) {
         if (!musicTracks_.empty()) playMusicTrack(5, audio);
         cutsceneMusicStarted_ = true;
+    }
+
+    cutsceneAnimTime_ += dt;
+    // Talking cadence for the cutscene face: a rhythmic open/close with
+    // short "breathing" pauses in between.
+    {
+        const float ct = cutsceneAnimTime_;
+        const float breath = std::sin(ct * 0.9f);
+        const float speaking = breath > -0.55f;
+        const float phase = std::fmod(ct / 0.16f, 1.0f);
+        float target = 0.0f;
+        if (speaking && phase > 0.08f && phase < 0.55f) {
+            target = 1.0f - std::abs(phase - 0.315f) / 0.235f;
+        }
+        cutsceneMouthMix_ += (target - cutsceneMouthMix_) *
+                             std::min(1.0f, dt * 22.0f);
     }
 
     const int lineCount = cutsceneLineCount(fxt_, cutsceneIndex_);
@@ -2932,8 +2971,9 @@ void Game::spawnTraffic() {
     std::uniform_int_distribution<int> coordinate(0, CityMap::kSize - 1);
     static const int dirs[4][2] = {{0, -1}, {1, 0}, {0, 1}, {-1, 0}};
 
-    for (int attempt = 0; attempt < 12000 &&
-                            traffic_.size() < 8; ++attempt) {
+    // Keep a lively crowd of cars around the player, as in the original.
+    for (int attempt = 0; attempt < 40000 &&
+                            traffic_.size() < 30; ++attempt) {
         const int x = coordinate(rng_);
         const int y = coordinate(rng_);
         const int surface = world_.roadSurface(x, y);
@@ -2942,7 +2982,7 @@ void Game::spawnTraffic() {
         const float dx = pos.x - player.x;
         const float dz = pos.z - player.z;
         const float d2 = dx * dx + dz * dz;
-        if (d2 < 7.0f * 7.0f || d2 > 35.0f * 35.0f) continue;
+        if (d2 < 5.0f * 5.0f || d2 > 40.0f * 40.0f) continue;
         bool tooClose = false;
         for (const TrafficCar& other : traffic_) {
             const float ox = other.pos.x - pos.x;
@@ -3194,8 +3234,10 @@ void Game::spawnPeds() {
     std::uniform_int_distribution<int> coordinate(0, CityMap::kSize - 1);
     static const int dirs[4][2] = {{0, -1}, {1, 0}, {0, 1}, {-1, 0}};
 
-    for (int attempt = 0; attempt < 12000 &&
-                            pedestrians_.size() < 24; ++attempt) {
+    // The original streets are full of people; keep a similar crowd near
+    // the player instead of a bare handful per city.
+    for (int attempt = 0; attempt < 40000 &&
+                            pedestrians_.size() < 70; ++attempt) {
         const int x = coordinate(rng_);
         const int y = coordinate(rng_);
         // Pedestrians belong on the pavement; only fall back to the road if
@@ -5001,13 +5043,69 @@ void Game::renderCutscene(Renderer& renderer) {
     frame.offsetY = (h - 480.0f * frame.scale) * 0.5f;
 
     if (cutsceneTextures_[cutsceneIndex_]) {
-        float alpha = 1.0f;
+        // The original scenes breathe: a slow push-in, a faint light
+        // flicker, a bobbing head and a talking mouth.  Only one still
+        // frame ships per city (CUT*.RAW is a single 640x480 image), so the
+        // motion is synthesised from sub-rectangles of that image.
+        struct FaceRect {
+            float hx0, hy0, hx1, hy1;
+            float mx0, my0, mx1, my1;
+        };
+        static const FaceRect kFaces[6] = {
+            {30, 5, 195, 175, 70, 92, 135, 128},  // CUT0: Liberty City
+            {350, 25, 485, 185, 382, 100, 455, 138}, // CUT1: San Andreas
+            {60, 35, 150, 120, 85, 75, 125, 95},
+            {270, 15, 360, 115, 292, 68, 340, 92},
+            {370, 20, 490, 165, 402, 90, 465, 130}, // CUT4: Vice City
+            {30, 5, 195, 175, 70, 92, 135, 128},
+        };
+        const FaceRect& face =
+            kFaces[cutsceneIndex_ % static_cast<int>(sizeof(kFaces) /
+                                                     sizeof(kFaces[0]))];
+
+        const float t = cutsceneAnimTime_;
+        const float zoom = 1.0f + 0.045f * std::min(1.0f, t / 12.0f);
+        const float z = frame.scale * zoom;
+        const float cx =
+            w * 0.5f + std::sin(t * 0.07f) * 6.0f * frame.scale;
+        const float cy = h * 0.5f +
+                         std::max(-8.0f, std::min(8.0f, -t * 0.4f)) *
+                             frame.scale * 0.4f;
+        const float flicker = 0.97f + 0.015f * std::sin(t * 9.1f) +
+                              0.012f * std::sin(t * 17.3f + 1.7f);
+        float alpha = flicker;
         if (cutsceneLine_ == 0) {
-            alpha = std::min(1.0f, cutsceneLineTimer_ / 0.5f + 0.25f);
+            alpha *= std::min(1.0f, cutsceneLineTimer_ / 0.5f + 0.25f);
         }
-        drawTexturedRect(renderer, cutsceneTextures_[cutsceneIndex_],
-                         frame.offsetX, frame.offsetY, 640.0f * frame.scale,
-                         480.0f * frame.scale, 0, 0, 1, 1, 1, 1, 1, alpha);
+
+        const float bobY = std::sin(t * kPi * 2.0f * 0.8f) * 1.4f * z;
+        const float bobX =
+            std::sin(t * kPi * 2.0f * 0.37f + 0.9f) * 1.0f * z;
+
+        auto sub = [&](float px0, float py0, float px1, float py1,
+                       float r, float g, float b, float a,
+                       float offX = 0.0f, float offY = 0.0f) {
+            const float sx = cx - 320.0f * z + px0 * z + offX;
+            const float sy = cy - 240.0f * z + py0 * z + offY;
+            drawTexturedRect(renderer,  //
+                cutsceneTextures_[cutsceneIndex_],
+                sx, sy, (px1 - px0) * z, (py1 - py0) * z,
+                px0 / 640.0f, py0 / 480.0f, px1 / 640.0f, py1 / 480.0f, r, g,
+                b, a);
+        };
+
+        // Full scene.
+        sub(0, 0, 640, 480, alpha, alpha, alpha, alpha);
+        // Head: gentle bob so the face feels alive.
+        sub(face.hx0, face.hy0, face.hx1, face.hy1, alpha, alpha, alpha,
+            alpha, bobX, bobY);
+        // Mouth: the cadence is computed in updateCutscene.
+        if (cutsceneMouthMix_ > 0.01f) {
+            const float m = cutsceneMouthMix_;
+            const float bright = 1.0f - 0.24f * m * alpha;
+            sub(face.mx0, face.my0, face.mx1, face.my1, bright, bright,
+                bright, alpha, bobX, bobY + m * 1.6f * z);
+        }
     }
 
     const std::string key =

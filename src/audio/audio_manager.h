@@ -29,6 +29,10 @@ public:
     void setEngineVolume(float volume);
     void setMusicEnabled(bool enabled);
     void setEngine(float speed, float throttle, bool crashing);
+    // Street ambience (wind + distant traffic rumble).  The original plays
+    // no music while the city is open, only environmental noise, so this
+    // bed is what makes the streets feel inhabited.
+    void setAmbient(float level);
     void playPickupSound();
 
     bool playMusicFile(const std::string& path, std::string& error);
@@ -57,6 +61,7 @@ private:
     std::atomic<float> speed_{0.0f};
     std::atomic<float> throttle_{0.0f};
     std::atomic<float> crash_{0.0f};
+    std::atomic<float> ambient_{0.0f};
     std::atomic<bool> paused_{false};
     std::atomic<bool> musicEnabled_{true};
     std::atomic<int> pickupRequests_{0};
@@ -84,6 +89,9 @@ private:
     double pickupPhase_ = 0.0;
     float pickupEnvelope_ = 0.0f;
     float lowpass_ = 0.0f;
+    float ambRumble_ = 0.0f;  // low-passed traffic rumble
+    float ambAir_ = 0.0f;     // light "wind in the air" noise
+    double ambWindPhase_ = 0.0;
     uint32_t noiseState_ = 0x12345678u;
 };
 

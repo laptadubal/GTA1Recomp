@@ -87,6 +87,10 @@ void AudioManager::setEngine(float speed, float throttle, bool crashing) {
     if (crashing) crash_.store(1.0f);
 }
 
+void AudioManager::setAmbient(float level) {
+    ambient_.store(std::clamp(level, 0.0f, 1.0f));
+}
+
 bool AudioManager::playMusicFile(const std::string& path, std::string& error) {
     SDL_AudioSpec wavSpec{};
     Uint8* wav = nullptr;
@@ -299,6 +303,29 @@ void AudioManager::mix(Sint16* out, int samples) {
         }
         lowpass_ += (engine - lowpass_) * 0.075f;
 
+        // Street ambience: a low traffic rumble bed plus slow-gusting wind.
+        // Generated from the same noise source, low-passed to two bands.
+        float amb = 0.0f;
+        const float ambientLevel = (paused ? 0.0f : ambient_.load()) * master;
+        if (ambientLevel > 0.0001f) {
+            noiseState_ = noiseState_ * 1664525u + 1013904223u;
+            const float white =
+                static_cast<float>((noiseState_ >> 8) & 0xffff) / 32768.0f -
+                1.0f;
+            ambRumble_ += (white - ambRumble_) * 0.0018f;  // deep rumble
+            ambAir_ += (white - ambAir_) * 0.03f;          // wind in air
+            ambWindPhase_ += 0.13 / sampleRate;
+            if (ambWindPhase_ >= 1.0) ambWindPhase_ -= 1.0;
+            const float gust =
+                0.5f + 0.5f * std::sin(static_cast<float>(ambWindPhase_) *
+                                       kTwoPi);
+            amb = (ambRumble_ * 0.85f + ambAir_ * (0.12f + gust * 0.30f)) *
+                  0.7f * ambientLevel;
+        } else {
+            ambRumble_ *= 0.98f;
+            ambAir_ *= 0.98f;
+        }
+
         float pickup = 0.0f;
         if (!paused && pickupEnvelope_ > 0.0f) {
             pickupPhase_ += 920.0 / sampleRate;
@@ -345,7 +372,7 @@ void AudioManager::mix(Sint16* out, int samples) {
                     const float value =
                         (s0 + (s1 - s0) * static_cast<float>(fraction)) / 32768.0f;
                     const float sample =
-                        lowpass_ + value * musicVolume + pickup + sfx;
+                        lowpass_ + value * musicVolume + pickup + sfx + amb;
                     out[i * kChannels + c] = static_cast<Sint16>(
                         std::clamp(sample, -1.0f, 1.0f) * 32767.0f);
                 }
@@ -358,8 +385,9 @@ void AudioManager::mix(Sint16* out, int samples) {
             musicPosition_ = 0.0;
         }
 
-        const Sint16 s = static_cast<Sint16>(
-            std::clamp(lowpass_ + pickup + sfx, -1.0f, 1.0f) * 32767.0f);
+        const float total = lowpass_ + amb + pickup + sfx;
+        const Sint16 s =
+            static_cast<Sint16>(std::clamp(total, -1.0f, 1.0f) * 32767.0f);
         out[i * kChannels + 0] = s;
         out[i * kChannels + 1] = s;
     }

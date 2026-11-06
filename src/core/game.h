@@ -527,6 +527,8 @@ private:
     int cutsceneIndex_ = 0;
     int cutsceneLine_ = 0;
     float cutsceneLineTimer_ = 0.0f;
+    float cutsceneAnimTime_ = 0.0f;
+    float cutsceneMouthMix_ = 0.0f;
     bool cutsceneThenPlay_ = false;
     bool cutsceneFinished_ = false;
 
