@@ -34,6 +34,7 @@ void printUsage(const char* program) {
         "  --car N             Car model index\n"
         "  --debug             Show debug information\n"
         "  --demo              Drive automatically (smoke test / capture)\n"
+        "  --spawn X,Y         Start on the street nearest this map cell\n"
         "  --screen NAME       Start on intro, menu, settings, controls, game,\n"
         "                      pause or mission (development helper)\n"
         "  --config PATH       Configuration file (default: user pref dir)\n"
@@ -140,6 +141,16 @@ int main(int argc, char** argv) {
             config.showDebug = true;
         } else if (arg == "--demo") {
             demoMode = true;
+        } else if (arg == "--spawn") {
+            if (!nextValue(argc, argv, i, value)) return 1;
+            int sx = -1, sy = -1;
+            if (std::sscanf(value.c_str(), "%d,%d", &sx, &sy) != 2) {
+                std::fprintf(stderr, "--spawn needs X,Y\n");
+                SDL_Quit();
+                return 1;
+            }
+            config.spawnX = sx;
+            config.spawnY = sy;
         } else if (arg == "--screen") {
             if (!nextValue(argc, argv, i, startScreen)) return 1;
         } else if (arg == "--config") {

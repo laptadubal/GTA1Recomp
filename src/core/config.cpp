@@ -104,7 +104,9 @@ bool loadConfig(const std::string& path, GameConfig& config, std::string& error)
         else if (key == "city") config.city = value;
         else if (key == "car") config.carIndex = parseInt(value, config.carIndex);
         else if (key == "debug") parseBool(value, config.showDebug);
-        else if (key == "clean_roads") parseBool(value, config.cleanRoads);
+        // "clean_roads" is deliberately not loaded: ORIGINAL authored road
+        // artwork is always the fidelity reference at startup.  The in-game
+        // toggle can still switch to procedural paint for the session.
         else if (key == "save_valid") parseBool(value, config.save.valid);
         else if (key == "save_city") config.save.city = value;
         else if (key == "save_mission") config.save.mission = parseInt(value, config.save.mission);
@@ -160,7 +162,6 @@ bool saveConfig(const std::string& path, const GameConfig& config,
     file << "city = " << config.city << "\n";
     file << "car = " << config.carIndex << "\n";
     file << "debug = " << (config.showDebug ? "true" : "false") << "\n";
-    file << "clean_roads = " << (config.cleanRoads ? "true" : "false") << "\n";
     file << "save_valid = " << (config.save.valid ? "true" : "false") << "\n";
     if (config.save.valid) {
         file << "save_city = " << config.save.city << "\n";

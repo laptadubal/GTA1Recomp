@@ -46,7 +46,10 @@ struct GameConfig {
     std::string city = "NYC";
     int carIndex = 0;
     bool showDebug = false;
-    bool cleanRoads = true; // procedural lane paint instead of baked road tiles
+    bool cleanRoads = false; // optional procedural paint; ORIGINAL authored tiles by default
+    // Debug/validation override for the starting street (--spawn X,Y).
+    int spawnX = -1;
+    int spawnY = -1;
     SaveGame save;
 };
 

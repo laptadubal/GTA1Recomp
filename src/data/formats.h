@@ -28,6 +28,15 @@ struct MapBlock {
                                     (typeMap & 64 ? 4 : 0));
     }
     bool isFlat() const { return (typeMap & 128) != 0; }
+    // 0 = flat cube, 1-40 = 7/26-degree ramps, 41-44 = 45-degree ramps.
+    uint8_t slopeType() const {
+        return static_cast<uint8_t>((typeMap & 256 ? 1 : 0) +
+                                    (typeMap & 512 ? 2 : 0) +
+                                    (typeMap & 1024 ? 4 : 0) +
+                                    (typeMap & 2048 ? 8 : 0) +
+                                    (typeMap & 4096 ? 16 : 0) +
+                                    (typeMap & 8192 ? 32 : 0));
+    }
     uint8_t rotation() const {
         return static_cast<uint8_t>((typeMap & 16384 ? 1 : 0) + (typeMap & 32768 ? 2 : 0));
     }

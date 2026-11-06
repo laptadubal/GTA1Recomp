@@ -55,6 +55,11 @@ public:
     bool isStructuralLid(int index1Based) const;
     bool isWaterTile(int index1Based) const;
     bool isGrassTile(int index1Based) const;
+    // True when the tile art contains transparency-key pixels.  The original
+    // engine colour-keys those against whatever is behind, so such faces are
+    // routed to the alpha-test pass instead of the opaque one.
+    bool sideHasAlpha(int index1Based) const;
+    bool lidHasAlpha(int index1Based) const;
     // Average palette colour of a lid tile, used by the clean city map.
     void lidColor(int index1Based, uint8_t& r, uint8_t& g, uint8_t& b) const;
 
@@ -100,6 +105,8 @@ private:
     int lidSlots_ = 0;
     std::vector<TileUV> sideUVs_;
     std::vector<TileUV> lidUVs_;
+    // Per-atlas-slot flag: the tile art contains palette-index-0 pixels.
+    std::vector<uint8_t> slotHasAlpha_;
     std::vector<TileUV> auxUVs_;
     int variantStride_ = 0; // pixels per palette variant in the atlas
     TileUV whiteUV_{};

@@ -410,6 +410,7 @@ bool AssetManager::buildAtlas(std::string& error) {
     sideUVs_.resize(sideSlots_ + 1);
     lidUVs_.resize(lidSlots_ + 1);
     auxUVs_.resize(static_cast<size_t>(std::max(0, slots - sideSlots_ - lidSlots_)));
+    slotHasAlpha_.assign(static_cast<size_t>(slots), 0);
 
     const uint8_t* remapTable = gry_.remapTables.empty() ? nullptr : gry_.remapTables.data();
     std::vector<uint8_t> tile(4096);
@@ -453,6 +454,18 @@ bool AssetManager::buildAtlas(std::string& error) {
                         static_cast<size_t>(slot - sideSlots_ - lidSlots_);
                     if (aux < auxUVs_.size()) auxUVs_[aux] = uv;
                 }
+                // The transparency mask is the same for every palette
+                // variant: palette index 0 is always the colour key.
+                bool any = false;
+                for (int yy = 0; yy < cell && !any; ++yy) {
+                    for (int xx = 0; xx < cell; ++xx) {
+                        if (tile[static_cast<size_t>(yy) * cell + xx] == 0) {
+                            any = true;
+                            break;
+                        }
+                    }
+                }
+                slotHasAlpha_[static_cast<size_t>(slot)] = any ? 1 : 0;
             }
         }
     };
@@ -521,6 +534,20 @@ TileUV AssetManager::lidUV(int index1Based, int remap) const {
         return remapped(auxUVs_[static_cast<size_t>(aux)], remap);
     }
     return TileUV{};
+}
+
+bool AssetManager::sideHasAlpha(int index1Based) const {
+    if (index1Based <= 0 ||
+        index1Based >= static_cast<int>(slotHasAlpha_.size()))
+        return false;
+    return slotHasAlpha_[static_cast<size_t>(index1Based)] != 0;
+}
+
+bool AssetManager::lidHasAlpha(int index1Based) const {
+    const int slot = sideSlots_ + index1Based;
+    if (index1Based <= 0 || slot >= static_cast<int>(slotHasAlpha_.size()))
+        return false;
+    return slotHasAlpha_[static_cast<size_t>(slot)] != 0;
 }
 
 GLuint AssetManager::spriteTexture(int grySpriteIndex) {

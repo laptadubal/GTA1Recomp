@@ -404,14 +404,21 @@ void Game::resetCar() {
     const std::string& city = assets_.cityName();
     int preferredX = 128, preferredY = 128;
     if (city == "NYC") {
-        preferredX = 128;
-        preferredY = 122;
+        // The first Liberty City payphone (MISSION.INI) is at (108,108);
+        // starting there gives the original dense street view instead of the
+        // empty parkland near the map centre.
+        preferredX = 108;
+        preferredY = 108;
     } else if (city == "MIAMI") {
         preferredX = 122;
         preferredY = 128;
     } else if (city == "SANB") {
         preferredX = 128;
         preferredY = 132;
+    }
+    if (config_.spawnX >= 0 && config_.spawnY >= 0) {
+        preferredX = config_.spawnX;
+        preferredY = config_.spawnY;
     }
     const Vec3 spawn = world_.findSpawn(preferredX, preferredY);
     const int cx = static_cast<int>(std::floor(spawn.x));
@@ -2853,9 +2860,10 @@ void Game::drawWorld(Renderer& renderer) {
     }
 
     // Pass 2: transparent "flat" decals (trees, road markings, graffiti).
-    // Depth testing keeps them behind buildings; depth writes are disabled so
-    // stacked decals blend in order.
+    // Fences and railings are real edge-aligned planes, so they need both
+    // sides; the opaque pass keeps back-face culling.
     shader.setInt("uAlphaTest", 1);
+    glDisable(GL_CULL_FACE);
     glEnable(GL_BLEND);
     glDepthMask(GL_FALSE);
     for (const CityChunk& chunk : world_.chunks()) {
