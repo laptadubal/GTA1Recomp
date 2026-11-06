@@ -25,7 +25,7 @@ Layout after the header:
 1. `base[256*256]` (`uint32`, byte offsets, always even).
 2. `column[columnSize/2]` (`uint16`).
 3. `blocks[blockSize/8]` (`uint8[8]` per record).
-4. Object positions (`objectPosSize / 16` records of 16 bytes).
+4. Object positions (`objectPosSize / 14` records of 14 bytes).
 5. Route, locations and nav data (not used yet).
 
 ### Column lookup
@@ -79,7 +79,7 @@ asphalt tiles and tiles that carry lane paint, so asphalt is classified by its
 dark neutral-grey tone rather than by the presence of yellow pixels; requiring
 lane paint marks half of every lane as non-road.
 
-### Object record (16 bytes)
+### Object record (14 bytes)
 
 ```
 0  uint16 x, 2 y, 4 z   (8.8 fixed point)
@@ -88,10 +88,13 @@ lane paint marks half of every lane as non-road.
 8  uint16 rotation
 10 uint16 pitch
 12 uint16 roll
-14 uint16 unused
 ```
 
-The engine parses objects but does not place them yet.
+`objectPosSize` is a multiple of 14, not 16. Striding by 16 silently
+misaligns every record after the first (objects pile up at the map corner
+and props land in the wrong streets). The record is exactly 14 bytes with no
+padding. `type` / `remap` select the GRY object (or car) sprite via the
+object-info and car-info tables; `remap >= 128` marks a parked car.
 
 ## GRY v325 — graphics archive
 

@@ -111,10 +111,12 @@ bool loadCityMap(const std::string& path, CityMap& out, std::string& error) {
         error = "CMP file truncated in object data";
         return false;
     }
-    const size_t objectCount = map.objectPosSize / 16;
+    // ObjectPosition records are 14 bytes: x, y, z (8.8 fixed point),
+    // type, remap, rotation, pitch and roll.
+    const size_t objectCount = map.objectPosSize / 14;
     map.objects.resize(objectCount);
     for (size_t i = 0; i < objectCount; ++i) {
-        const uint8_t* p = data.data() + offset + i * 16;
+        const uint8_t* p = data.data() + offset + i * 14;
         MapObject& o = map.objects[i];
         o.x = rd16(p + 0);
         o.y = rd16(p + 2);

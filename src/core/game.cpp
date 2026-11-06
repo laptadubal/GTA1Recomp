@@ -3403,6 +3403,9 @@ void Game::spawnProps() {
         if (prop.width <= 0.0f || prop.height <= 0.0f) continue;
         props_.push_back(prop);
     }
+    if (config_.showDebug) {
+        std::printf("props: %zu placed\n", props_.size());
+    }
 }
 
 void Game::drawProps(Renderer& renderer) {
