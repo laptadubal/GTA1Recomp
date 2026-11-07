@@ -413,6 +413,7 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
     const bool dbgNoLids = dbgFilter == "nolids";
     const bool dbgNoFloor = dbgFilter == "nofloor";
     const bool dbgIdColor = dbgFilter == "idcolor";
+    const bool dbgCellColor = dbgFilter == "cellcolor";
 
     std::vector<uint32_t> opaqueIndex;
     std::vector<uint32_t> alphaIndex;
@@ -524,6 +525,12 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
             cg = static_cast<float>((lid * 101) % 256) / 255.0f;
             cb = static_cast<float>((lid * 151) % 256) / 255.0f;
         }
+        if (dbgCellColor) {
+            uv = assets.whiteUV();
+            cr = static_cast<float>(x) / 255.0f;
+            cg = static_cast<float>(y) / 255.0f;
+            cb = 0.2f;
+        }
         emitLidUV(x, y, base, uv, rotation, slope, transparent, cr, cg, cb);
     };
 
@@ -542,6 +549,12 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
             cr = static_cast<float>((tile * 37) % 256) / 255.0f;
             cg = static_cast<float>((tile * 101) % 256) / 255.0f;
             cb = static_cast<float>((tile * 151) % 256) / 255.0f;
+        }
+        if (dbgCellColor) {
+            uv = assets.whiteUV();
+            cr = static_cast<float>(x) / 255.0f;
+            cg = static_cast<float>(y) / 255.0f;
+            cb = 0.8f;
         }
         const MapBlock* block = map.blockAt(x, y, base);
         int slope = block ? block->slopeType() : 0;
@@ -708,9 +721,23 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
                     floorUV = water ? waterFloor : grassFloor;
                 }
                 if (floorUV.u1 <= floorUV.u0) floorUV = grassFloor;
-                if (floorUV.u1 > floorUV.u0)
+                if (floorUV.u1 > floorUV.u0) {
+                    float fr = 1.0f, fg = 1.0f, fb = 1.0f;
+                    if (dbgFilter == "floorcoord") {
+                        floorUV = assets.whiteUV();
+                        fr = static_cast<float>(cellX) / 255.0f;
+                        fg = static_cast<float>(cellY) / 255.0f;
+                        fb = 1.0f;
+                    }
+                    if (dbgCellColor) {
+                        floorUV = assets.whiteUV();
+                        fr = static_cast<float>(cellX) / 255.0f;
+                        fg = static_cast<float>(cellY) / 255.0f;
+                        fb = 0.5f;
+                    }
                     emitLidUV(cellX, cellY, height - 1, floorUV, floorRot, 0,
-                              false);
+                              false, fr, fg, fb);
+                }
             }
 
             if (n <= 0) continue;
