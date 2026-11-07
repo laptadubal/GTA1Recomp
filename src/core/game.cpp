@@ -6133,8 +6133,10 @@ void Game::drawHud(Renderer& renderer) {
                     true);
     }
 
-    // Wanted level stars under the cash counter.
-    if (wantedLevel_ > 0) {
+    // Wanted level stars under the cash counter.  The original HUD keeps the
+    // five-slot indicator visible at all times; lit slots mark the current
+    // level and blink briefly right after a level change.
+    {
         const float starSize = 13.0f * s;
         const float gap = 5.0f * s;
         const float totalW = starSize * 5.0f + gap * 4.0f;
