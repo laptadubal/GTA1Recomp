@@ -33,9 +33,14 @@ const float kSlopeRaw[45][5][4][3] = {
 };
 
 const char* kDirectionNames[4] = {"north", "south", "west", "east"};
-// Empirical CMP field mapping, verified over every exposed face of all three
-// cities: north/left, south/right, west/top, east/bottom.
-const int kDirectionFields[4] = {2, 3, 4, 5}; // 2=left, 3=right, 4=top, 5=bottom
+// Empirical CMP field mapping over every exposed face of all three cities:
+// north/top (z = 0), south/bottom (z = 1), west/left (x = 0), east/right
+// (x = 1) -- the same assignment OpenGTA's drawBlock uses.  The metric below
+// is invariant under transposing both the base grid index and this table, so
+// it only proves the two are consistent with each other, not which one is the
+// original layout; the orientation itself is pinned by MISSION.INI payphones
+// (see CityMap::blockCount).
+const int kDirectionFields[4] = {4, 5, 2, 3}; // 2=left, 3=right, 4=top, 5=bottom
 
 int fieldOf(const gta::MapBlock& block, int field) {
     switch (field) {
@@ -197,8 +202,12 @@ int main() {
     }
 
     // --- Known cell layout (elevated railway platforms) -------------------
+    // Coordinates are given in the map frame used by the rest of the game
+    // (MISSION.INI, CMP objects and routes).  The base grid stores them
+    // column-major, so these cells are the transposes of the ones an
+    // x * kSize + y lookup would report.
     {
-        const gta::MapBlock* deck = map.blockAt(118, 112, 4);
+        const gta::MapBlock* deck = map.blockAt(112, 118, 4);
         check(deck != nullptr, "railway deck block exists");
         if (deck) {
             check(deck->lid == 42, "railway deck keeps its authored lid");
@@ -207,10 +216,10 @@ int main() {
             check(deck->left == 113 && deck->top == 113,
                   "railway deck keeps its authored girder sides");
         }
-        const gta::MapBlock* air = map.blockAt(118, 112, 0);
+        const gta::MapBlock* air = map.blockAt(112, 118, 0);
         check(air != nullptr && air->isAir(),
               "z-order: the level below the deck is empty air");
-        const gta::MapBlock* fence = map.blockAt(112, 111, 3);
+        const gta::MapBlock* fence = map.blockAt(111, 112, 3);
         check(fence != nullptr && fence->isFlat() && fence->left == 106,
               "flat BAR sign is stored one level above the pavement");
     }

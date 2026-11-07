@@ -84,9 +84,18 @@ struct CityMap {
 
     bool valid() const { return version == 331 && base.size() == kSize * kSize; }
 
+    // The base grid is stored column-major with respect to the map axes used
+    // everywhere else in the game (CMP objects, MISSION.INI payphones and the
+    // CMP route network all address a cell as base[y * kSize + x]).  Reading it
+    // as base[x * kSize + y] transposes the whole city: the geometry is still
+    // city-shaped, but every street, block and landmark is mirrored about the
+    // map diagonal, so the result never matches the original layout.  Verified
+    // against all 128 Liberty City payphones in MISSION.INI: with this index
+    // every one lands on a surface at exactly its authored height, with the
+    // other index 39 of them sit inside buildings.
     int blockCount(int x, int y) const {
         if (x < 0 || y < 0 || x >= kSize || y >= kSize) return 0;
-        uint32_t idx = base[x * kSize + y] / 2;
+        uint32_t idx = base[y * kSize + x] / 2;
         if (idx >= column.size()) return 0;
         // CMP stores the number of *empty* levels above the column, not the
         // number of blocks.  GTA1 columns are six levels tall, so a stored
@@ -102,7 +111,7 @@ struct CityMap {
     const MapBlock* blockAt(int x, int y, int z) const {
         int n = blockCount(x, y);
         if (z < 0 || z >= n) return nullptr;
-        uint32_t idx = base[x * kSize + y] / 2;
+        uint32_t idx = base[y * kSize + x] / 2;
         // entries after the empty-level count are stored top-to-bottom
         uint16_t blockIndex = column[idx + n - z];
         if (blockIndex >= blocks.size()) return nullptr;

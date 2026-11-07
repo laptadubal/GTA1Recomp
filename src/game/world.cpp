@@ -439,15 +439,19 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
         int ny;
         bool mirrorTopBottom;
     };
-    // CMP side fields are stored in a 90-degree-rotated order compared with
-    // the cube's geometric sides.  Verified against every exposed face of all
-    // three city maps (NYC/MIAMI/SANB): the field that matches a north face is
-    // "left", south is "right", west is "top" and east is "bottom".
+    // Which CMP field carries the texture of which cube side.  The map is
+    // stored column-major (base[y * kSize + x]), so the field names line up
+    // with the axes the obvious way round: "left"/"right" are the two faces
+    // perpendicular to X (x = 0 / x = 1) and "top"/"bottom" are the faces
+    // perpendicular to Z (z = 0 / z = 1).  This is also the mapping used by
+    // OpenGTA's drawBlock (top -> the z = 0 face, bottom -> z = 1, left ->
+    // x = 0, right -> x = 1).  The previous table applied these swapped,
+    // which put every facade, fence and kerb on the neighbouring edge.
     const FaceDef faces[4] = {
-        {2, 1, 2, 0, -1, true},   // north (z = 0)
-        {1, 0, 3, 0, 1, true},    // south (z = 1)
-        {3, 2, 4, -1, 0, false},  // west  (x = 0)
-        {4, 3, 5, 1, 0, false},   // east  (x = 1)
+        {2, 1, 4, 0, -1, true},   // z = 0 face, field "top"
+        {1, 0, 5, 0, 1, true},    // z = 1 face, field "bottom"
+        {3, 2, 2, -1, 0, false},  // x = 0 face, field "left"
+        {4, 3, 3, 1, 0, false},   // x = 1 face, field "right"
     };
     // The 45-degree models leave one vertical face degenerate.
     const int skipSlopeFace[4] = {42, 41, 44, 43};
@@ -802,17 +806,21 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
                 if (flat) {
                     // Fences/railings: the opposite field pair describes the
                     // two sides of one vertical plane.  Draw real edge
-                    // geometry instead of a camera-facing billboard.
-                    if (block->left || block->right) {
+                    // geometry instead of a camera-facing billboard.  The
+                    // "top"/"bottom" pair sits on the z = 0 edge, the
+                    // "left"/"right" pair on the x = 0 edge (OpenGTA draws
+                    // exactly one such plane, at -1.001 along the axis the
+                    // pair belongs to).
+                    if (block->top || block->bottom) {
                         const uint8_t tile =
-                            block->left ? block->left : block->right;
+                            block->top ? block->top : block->bottom;
                         emitSide(cellX, cellY, z, 0, tile,
                                  block->remapIndex(), block->flipTopBottom(),
                                  true);
                     }
-                    if (block->top || block->bottom) {
+                    if (block->left || block->right) {
                         const uint8_t tile =
-                            block->top ? block->top : block->bottom;
+                            block->left ? block->left : block->right;
                         emitSide(cellX, cellY, z, 2, tile,
                                  block->remapIndex(), block->flipLeftRight(),
                                  true);
