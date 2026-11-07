@@ -443,6 +443,14 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
     const CityMap& map = assets_->map();
     const AssetManager& assets = *assets_;
 
+    // Diagnostic filters (audit): GTA_DBG=nosides|nolids|nofloor isolates the
+    // geometry classes so the screenshot shows what the CMP actually contains.
+    std::string dbgFilter;
+    if (const char* e = std::getenv("GTA_DBG")) dbgFilter = e;
+    const bool dbgNoSides = dbgFilter == "nosides";
+    const bool dbgNoLids = dbgFilter == "nolids";
+    const bool dbgNoFloor = dbgFilter == "nofloor";
+
     std::vector<uint32_t> opaqueIndex;
     std::vector<uint32_t> alphaIndex;
 
@@ -543,6 +551,7 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
     auto emitLid = [&](int x, int y, int base, uint8_t lid, int remap,
                        int rotation, int slope, bool transparent) {
         if (!lid) return;
+        if (dbgNoLids) return;
         // Tiles with transparency-key pixels keep the original colour-key
         // behaviour: they render in the alpha-test pass so the holes show
         // whatever is behind instead of coming out solid black.
@@ -557,6 +566,7 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
     auto emitSide = [&](int x, int y, int base, int face, uint8_t tile,
                         int remap, bool mirror, bool transparent) {
         if (!tile) return;
+        if (dbgNoSides) return;
         const TileUV uv = assets.sideUV(tile, remap);
         if (uv.u1 <= uv.u0 || uv.v1 <= uv.v0) return;
         const MapBlock* block = map.blockAt(x, y, base);
@@ -758,7 +768,7 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
             }
 
             // Floor under decal-only columns, empty park gaps and open sea.
-            if (!hasOpaqueLid) {
+            if (!hasOpaqueLid && !dbgNoFloor) {
                 const bool water =
                     (n <= 0) && floorWater_[cellIndex] != 0;
                 int height = top > 0 ? top : static_cast<int>(baseHeight_);
