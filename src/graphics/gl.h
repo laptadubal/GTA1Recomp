@@ -5,10 +5,16 @@
 // Desktop builds use OpenGL 3.3 core.  Android builds use OpenGL ES 3.0 via
 // the GTA_GLES compile definition (set by CMake).  macOS ships a Core Profile
 // header with all 3.3 entry points; Linux/BSD use the system GL headers with
-// prototypes enabled.  Windows builds should add GLEW/GLAD (see README).
+// prototypes enabled. Windows uses GLEW because opengl32.dll only exports the
+// legacy 1.1 API.
 
 #if defined(GTA_GLES)
 #include <GLES3/gl3.h>
+#elif defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <GL/glew.h>
 #elif defined(__APPLE__)
 #ifndef GL_SILENCE_DEPRECATION
 #define GL_SILENCE_DEPRECATION

@@ -13,6 +13,13 @@ constexpr int kSampleRate = 44100;
 constexpr int kChannels = 2;
 constexpr int kBufferSamples = 512;
 constexpr float kTwoPi = 6.28318530717958647692f;
+
+uint32_t readLE32(const uint8_t* p) {
+    return static_cast<uint32_t>(p[0]) |
+           (static_cast<uint32_t>(p[1]) << 8) |
+           (static_cast<uint32_t>(p[2]) << 16) |
+           (static_cast<uint32_t>(p[3]) << 24);
+}
 } // namespace
 
 AudioManager::~AudioManager() { shutdown(); }
@@ -81,9 +88,11 @@ void AudioManager::playPickupSound() {
     }
 }
 
-void AudioManager::setEngine(float speed, float throttle, bool crashing) {
+void AudioManager::setEngine(float speed, float throttle, bool crashing,
+                             int sfxId) {
     speed_.store(std::abs(speed));
     throttle_.store(std::clamp(throttle, -1.0f, 1.0f));
+    engineSfxId_.store(sfxId);
     if (crashing) crash_.store(1.0f);
 }
 
@@ -191,11 +200,17 @@ bool AudioManager::loadSfxBank(const std::string& sdtPath, std::string& error) {
     entries.reserve(index.size() / 12);
     for (size_t i = 0; i + 12 <= index.size(); i += 12) {
         SfxEntry entry;
-        std::memcpy(&entry.start, index.data() + i, 4);
-        std::memcpy(&entry.size, index.data() + i + 4, 4);
-        std::memcpy(&entry.rate, index.data() + i + 8, 4);
+        entry.start = readLE32(index.data() + i);
+        entry.size = readLE32(index.data() + i + 4);
+        entry.rate = readLE32(index.data() + i + 8);
         if (entry.rate == 0) entry.rate = 11025;
-        if (entry.start + entry.size > samples.size()) continue;
+        // Keep the table slot even for malformed entries: SDT IDs are their
+        // ordinal, so skipping one would shift every following sound ID.
+        if (entry.start > samples.size() ||
+            entry.size > samples.size() - entry.start) {
+            entry.start = 0;
+            entry.size = 0;
+        }
         entries.push_back(entry);
     }
     if (entries.empty()) {
@@ -263,6 +278,17 @@ void AudioManager::mix(Sint16* out, int samples) {
     const float speedFactor = std::min(1.0f, speed / 18.0f);
     const float throttlePos = std::max(0.0f, throttle);
     const double baseFreq = 27.0 + speedFactor * 58.0 + throttlePos * 9.0;
+    const int requestedEngineSfx = engineSfxId_.load();
+    if (requestedEngineSfx != activeEngineSfxId_) {
+        activeEngineSfxId_ = requestedEngineSfx;
+        engineSfxPosition_ = 0.0;
+    }
+    const bool hasEngineSample =
+        !paused && requestedEngineSfx >= 0 &&
+        requestedEngineSfx < static_cast<int>(sfxEntries_.size()) &&
+        sfxEntries_[static_cast<size_t>(requestedEngineSfx)].size > 1;
+    const SfxEntry* engineEntry = hasEngineSample
+        ? &sfxEntries_[static_cast<size_t>(requestedEngineSfx)] : nullptr;
 
     const size_t musicFrames =
         musicChannels_ > 0 ? musicSamples_.size() / musicChannels_ : 0;
@@ -295,13 +321,34 @@ void AudioManager::mix(Sint16* out, int samples) {
                         harmonic3 * 0.06f + noise) *
                        (0.055f + speedFactor * 0.20f + throttlePos * 0.045f) *
                        engineVolume;
+        if (engineEntry && engineVolume > 0.0001f) {
+            const uint32_t size = engineEntry->size;
+            const double pos = engineSfxPosition_;
+            const size_t i0 = static_cast<size_t>(pos) % size;
+            const size_t i1 = (i0 + 1) % size;
+            const float fraction = static_cast<float>(pos - std::floor(pos));
+            const float a = (static_cast<float>(sfxRaw_[engineEntry->start + i0]) - 128.0f) / 128.0f;
+            const float b = (static_cast<float>(sfxRaw_[engineEntry->start + i1]) - 128.0f) / 128.0f;
+            const float sample = a + (b - a) * fraction;
+            // The source loops are authored at 5500 Hz. Scale their playback
+            // rate with vehicle speed while keeping a low idle pitch.
+            const double pitch = 0.62 + speedFactor * 0.75 + throttlePos * 0.06;
+            engineSfxPosition_ += static_cast<double>(engineEntry->rate) /
+                                  sampleRate * pitch;
+            while (engineSfxPosition_ >= static_cast<double>(size))
+                engineSfxPosition_ -= static_cast<double>(size);
+            engine = sample * (0.10f + speedFactor * 0.20f +
+                               throttlePos * 0.04f) * engineVolume;
+        }
         if (crash > 0.0f) {
             noiseState_ = noiseState_ * 1664525u + 1013904223u;
             engine += (static_cast<float>((noiseState_ >> 8) & 0xffff) / 32768.0f -
                        1.0f) *
                       0.09f * crash * master;
         }
-        lowpass_ += (engine - lowpass_) * 0.075f;
+        // The synthesized fallback is intentionally soft; original engine
+        // loops retain their brighter harmonics after sample interpolation.
+        lowpass_ += (engine - lowpass_) * (engineEntry ? 0.45f : 0.075f);
 
         // Street ambience: a low traffic rumble bed plus slow-gusting wind.
         // Generated from the same noise source, low-passed to two bands.
@@ -349,10 +396,16 @@ void AudioManager::mix(Sint16* out, int samples) {
                 voice.id = -1;
                 continue;
             }
-            const size_t index = static_cast<size_t>(voice.position);
-            const int sample = static_cast<int>(sfxRaw_[entry.start + index]);
-            sfx += ((static_cast<float>(sample) - 128.0f) / 128.0f) *
-                   voice.volume;
+            const size_t index0 = static_cast<size_t>(voice.position);
+            const size_t index1 = std::min<size_t>(index0 + 1, entry.size - 1);
+            const float fraction = static_cast<float>(
+                voice.position - static_cast<double>(index0));
+            const float sample0 =
+                static_cast<float>(sfxRaw_[entry.start + index0]);
+            const float sample1 =
+                static_cast<float>(sfxRaw_[entry.start + index1]);
+            const float sample = sample0 + (sample1 - sample0) * fraction;
+            sfx += ((sample - 128.0f) / 128.0f) * voice.volume;
             voice.position +=
                 static_cast<double>(entry.rate) / sampleRate;
         }

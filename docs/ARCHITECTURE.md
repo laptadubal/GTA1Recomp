@@ -8,12 +8,13 @@ main()
  ├─ load user config (SDL pref dir) + command line overrides
  ├─ Renderer::create       window, GL context, shaders, MSAA/FXAA targets
  ├─ InputManager::init     keyboard + hot-pluggable SDL game controllers
- ├─ AudioManager::init     procedural engine synthesis
+ ├─ AudioManager::init     original SDT effects and sampled engine loops (synth fallback)
  ├─ Game::init             data discovery, CMP/GRY load, world mesh, car setup
  └─ loop
      ├─ SDL_PollEvent → InputManager / Renderer::resize
      ├─ InputManager::newFrame
-     ├─ Game::update       toggles, driving physics, camera, audio parameters
+     ├─ Game::update       toggles, driving physics, camera, audio parameters,
+     │                     synchronized GRY tile-animation atlas updates
      ├─ Game::render       beginFrame → world → car → HUD → endFrame
      └─ screenshot / quit handling
 ```
@@ -98,8 +99,8 @@ simple `key = value` text file; unknown keys are ignored.
 
 ## Portability
 
-* **Desktop GL**: OpenGL 3.3 core, macOS/Linux/Windows (Windows needs a loader
-  such as GLAD/GLEW).
+* **Desktop GL**: OpenGL 3.3 core, macOS/Linux through system headers and
+  Windows through the GLEW loader located by CMake.
 * **Android GLES**: CMake sets `GTA_GLES=1`, which selects `GLES3/gl3.h`, an ES
   3.0 context and translates `#version 330 core` shaders to `#version 300 es`
   with precision qualifiers.
@@ -118,7 +119,10 @@ SDL2.
 * `Vehicle` exposes sprite/model indices and can be extended with damage deltas
   (`GrySpriteInfo::deltas`) for doors and sirens.
 * Traffic and pedestrians can share the same sprite cache and chunk culling.
-* A minimap can be rendered from the CMP base grid or cached roof textures.
+* The gameplay minimap is built from CMP surface classes (water, road,
+  pavement, field and building) and follows the player. At city edges the view
+  clamps to the map bounds and the player/object markers use that same clamped
+  viewport transform, keeping them aligned with the displayed streets.
 
 ## Original presentation layer
 

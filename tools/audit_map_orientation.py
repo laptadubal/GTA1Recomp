@@ -5,12 +5,12 @@
 `base[x * kSize + y]`; this script compares that with `base[y * kSize + x]`
 against two independent data sources that live in the same file/frame:
 
-  1. MISSION.INI payphones (absolute world coordinates).  A payphone stands on
-     a pavement at city floor level, never inside a building and never in the
-     middle of a road.
+  1. NYC MISSION.INI payphones (absolute world coordinates). A payphone stands
+     on pavement at city floor level, never inside a building or in the road.
   2. The CMP route network (`routeSize` bytes after the blocks and objects).
-     Car routes follow road cells; pedestrian routes (type 255) follow
-     pavements.
+     Type 255 records are police routes; types 0..253 are roadblock routes.
+     These authored coordinates help check the map frame, but are not routes
+     for ordinary civilian traffic.
 
 Run it from the repository root:
 
@@ -79,6 +79,27 @@ def make_top(cmp_map):
     return top
 
 
+def make_road_lookup(cmp_map):
+    """Return a predicate for the authored type-2 CMP road surface."""
+    def is_road(x, y):
+        n = cmp_map.num_blocks(x, y)
+        for z in range(n - 1, -1, -1):
+            block = cmp_map.block_at(x, y, z)
+            if block is None:
+                continue
+            tm, ext, left, right, upper, lower, lid = block
+            if tm == 0 and ext == 0 and not (left or right or upper or lower or lid):
+                continue
+            if tm & 128 or lid == 0:
+                continue
+            above = cmp_map.block_at(x, y, z + 1) if z + 1 < n else None
+            lid_type = (tm >> 4) & 7
+            above_type = ((above[0] >> 4) & 7) if above else 0
+            return (above_type if above_type != 0 else lid_type) == 2
+        return False
+    return is_road
+
+
 def payphones(path, section=1):
     out, sec = [], None
     for line in open(path, encoding='latin-1'):
@@ -115,26 +136,30 @@ def main():
     # parse_formats indexes base[x * 256 + y]; the engine now uses base[y * 256 + x],
     # which equals parse_formats' lookup with the arguments swapped.
     top = make_top(cmp_map)
+    is_road = make_road_lookup(cmp_map)
     print('%s: %d road lid(s)' % (city, len(road)))
 
-    phones = payphones('game_data/GTADATA/MISSION.INI')
-    print('\nMISSION.INI payphones (%d):' % len(phones))
-    for label, swap in (('old  base[x*256+y]', False),
-                        ('fixed base[y*256+x]', True)):
-        floor = raised = water = on_road = 0
-        for px, py, _pz in phones:
-            u, v = (py, px) if swap else (px, py)
-            height, lid = top(u, v)
-            if height == 0:
-                water += 1
-            elif height <= 2:
-                floor += 1
-            else:
-                raised += 1
-            if lid in road:
-                on_road += 1
-        print('  %-20s floor=%3d raised(building)=%3d none=%d  onRoadLid=%3d'
-              % (label, floor, raised, water, on_road))
+    if city == 'NYC':
+        phones = payphones('game_data/GTADATA/MISSION.INI')
+        print('\nNYC MISSION.INI payphones (%d):' % len(phones))
+        for label, swap in (('old  base[x*256+y]', False),
+                            ('fixed base[y*256+x]', True)):
+            floor = raised = water = on_road = 0
+            for px, py, _pz in phones:
+                u, v = (py, px) if swap else (px, py)
+                height, lid = top(u, v)
+                if height == 0:
+                    water += 1
+                elif height <= 2:
+                    floor += 1
+                else:
+                    raised += 1
+                if lid in road:
+                    on_road += 1
+            print('  %-20s floor=%3d raised(building)=%3d none=%d  onRoadLid=%3d'
+                  % (label, floor, raised, water, on_road))
+    else:
+        print('\nMISSION.INI payphones skipped (coordinates belong to NYC missions).')
 
     print('\nCMP route network:')
     for label, swap in (('old  base[x*256+y]', False),
@@ -142,24 +167,29 @@ def main():
         stats = Counter()
         total = Counter()
         for rtype, verts in routes(cmp_map):
-            kind = 'ped(255)' if rtype == 255 else ('car' if rtype < 200 else 'special')
+            if rtype == 255:
+                kind = 'police(255)'
+            elif rtype <= 253:
+                kind = 'roadblock(0..253)'
+            else:
+                kind = 'unclassified(254)'
             for (a, b, _z) in verts:
                 if (a, b, _z) == (0, 0, 0):
                     continue          # terminator
                 u, v = (b, a) if swap else (a, b)
                 total[kind] += 1
-                if top(u, v)[1] in road:
+                if is_road(u, v):
                     stats[kind] += 1
         detail = '  '.join('%s %d/%d (%.0f%%)' % (k, stats[k], total[k],
                                                   100.0 * stats[k] / max(total[k], 1))
                            for k in sorted(total))
         print('  %-20s %s' % (label, detail))
 
-    print('\nRead the grid as base[y*256+x] when every payphone sits on the floor '
-          'and the car routes follow the roads.\n'
-          'Note: the grey classifier above also matches plain pavement, so the '
-          'ped(255) rows are not a discriminator -- a foot route running along a '
-          'pavement scores as "on road" either way.  The car rows are.')
+    print('\nRead the grid as base[y*256+x] when this city\'s authored route '
+          'coordinates align with its CMP-tagged road network; NYC payphones provide an '
+          'additional check for NYC only.\n'
+          'Route data supports the coordinate frame but does not establish the '
+          'behavior of ordinary civilian traffic; type 254 remains unclassified.')
 
 
 if __name__ == '__main__':

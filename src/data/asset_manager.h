@@ -23,6 +23,8 @@ public:
 
     bool load(const std::string& dataDir, const std::string& city,
               std::string& error);
+    // Advance GRY's synchronous tile animations on the render thread.
+    void updateAnimations(float dt);
     // Releases all GPU resources.  Safe to call more than once and must be
     // called while the OpenGL context is still current.
     void destroy();
@@ -90,6 +92,7 @@ private:
     bool buildAtlas(std::string& error);
     bool buildMinimap(std::string& error);
     void classifyRoadLids();
+    void uploadAnimatedTile(const GryAnimation& animation, int phase);
     TileUV remapped(TileUV uv, int remap) const;
 
     std::string dataDir_;
@@ -108,6 +111,8 @@ private:
     // Per-atlas-slot flag: the tile art contains palette-index-0 pixels.
     std::vector<uint8_t> slotHasAlpha_;
     std::vector<TileUV> auxUVs_;
+    std::vector<uint8_t> animationPhases_;
+    double animationCycles_ = 0.0;
     int variantStride_ = 0; // pixels per palette variant in the atlas
     TileUV whiteUV_{};
     int plainRoadLid_ = 1;

@@ -85,6 +85,18 @@ int main() {
     check(map.objects.size() > 1000, "city map contains objects");
     check(map.blocks.size() > 1000, "city map contains blocks");
     check(map.column.size() > 1000, "city map contains columns");
+    int policeRoutes = 0;
+    int roadblockRoutes = 0;
+    int unresolvedRoutes = 0;
+    for (const gta::MapRoute& route : map.routes) {
+        if (route.type == 255) ++policeRoutes;
+        else if (route.type <= 253) ++roadblockRoutes;
+        else ++unresolvedRoutes;
+    }
+    check(map.routes.size() == 52, "CMP route records parse to exact routeSize");
+    check(policeRoutes == 22, "CMP type 255 records are preserved as police routes");
+    check(roadblockRoutes == 29, "CMP roadblock route records retain their IDs");
+    check(unresolvedRoutes == 1, "unclassified CMP type 254 record is preserved");
 
     int nonAir = 0;
     for (int y = 0; y < 256; ++y) {
@@ -136,6 +148,39 @@ int main() {
     check(gry.valid(), "graphics archive is valid");
     check(gry.version == 325, "graphics archive version is 325");
     check(gry.numSide() > 100, "side tile count");
+    check(gry.declaredAnimationCount == 5,
+          "NYC GRY declares five synchronous tile animations");
+    check(gry.animations.size() == 5 && !gry.animationDataTruncated,
+          "NYC GRY animation records and frames parse completely");
+    if (!gry.animations.empty()) {
+        const gta::GryAnimation& water = gry.animations.front();
+        check(water.block == 41 && water.which == 1 && water.speed == 7,
+              "NYC first animation targets lid 41 at authored speed");
+        check(water.frames.size() == 6 && water.frames.front() == 25 &&
+                  water.frames.back() == 30,
+              "NYC animated lid keeps its AUX frame sequence");
+    }
+
+    gta::GryFile sanbGry;
+    check(gta::loadGry(dataDir + "/STYLE002.GRY", sanbGry, error),
+          "San Andreas GRY loads");
+    check(sanbGry.animations.size() == 2 &&
+              !sanbGry.animationDataTruncated,
+          "San Andreas animation records parse completely");
+    gta::GryFile miamiGry;
+    check(gta::loadGry(dataDir + "/STYLE003.GRY", miamiGry, error),
+          "Miami GRY loads despite its inconsistent animation count");
+    check(miamiGry.declaredAnimationCount == 3 &&
+              miamiGry.animations.size() == 2 &&
+              miamiGry.animationDataTruncated,
+          "Miami keeps complete animation records and flags malformed tail");
+    check(miamiGry.remapIndexTable.size() == 1024,
+          "Miami GRY remap-index table parses all 256 lid rows");
+    check(miamiGry.lidRemapTable(0, 0) == 0 &&
+              miamiGry.lidRemapTable(1, 1) == 11 &&
+              miamiGry.lidRemapTable(1, 2) == 7 &&
+              miamiGry.lidRemapTable(1, 3) == 12,
+          "Miami CMP lid selectors resolve through tile-specific remap IDs");
     check(gry.numLid() > 100, "lid tile count");
     check(gry.sprites.size() > 500, "sprite count");
     check(gry.cars.size() == 38, "NYC car count is 38");
@@ -172,6 +217,9 @@ int main() {
         check(block.rotation() == 2, "rotation bit 1 decodes");
         block.typeMap = (1u << 14) | (1u << 15);
         check(block.rotation() == 3, "both rotation bits decode to 3");
+        block.typeMap = 0x000F;
+        check(block.directionMask() == 0x0F,
+              "all four CMP road direction bits decode");
     }
 
     // --- Original 45 slope models ----------------------------------------

@@ -37,6 +37,7 @@ private:
     float steer_ = 0.0f;
     float bob_ = 0.0f;
     float crashFlash_ = 0.0f;
+    int roadHeight_ = 0;
 
     int spriteIndex_ = 0;
     int model_ = 0;

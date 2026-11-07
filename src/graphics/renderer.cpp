@@ -59,6 +59,18 @@ bool Renderer::create(const GraphicsConfig& config, const std::string& title,
         return false;
     }
     SDL_GL_MakeCurrent(window_, context_);
+#if defined(_WIN32)
+    glewExperimental = GL_TRUE;
+    const GLenum glewStatus = glewInit();
+    if (glewStatus != GLEW_OK) {
+        error = std::string("failed to initialise GLEW: ") +
+                reinterpret_cast<const char*>(glewGetErrorString(glewStatus));
+        destroy();
+        return false;
+    }
+    // GLEW may issue one invalid-enum query while discovering a core context.
+    while (glGetError() != GL_NO_ERROR) {}
+#endif
     SDL_GL_SetSwapInterval(config.vsync ? 1 : 0);
 
     if (!spriteShader_.compile(shaders::kSpriteVertex, shaders::kSpriteFragment,

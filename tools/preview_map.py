@@ -14,7 +14,7 @@ from parse_formats import GRY, CMP, png
 city = sys.argv[1] if len(sys.argv) > 1 else 'NYC'
 CELL = int(sys.argv[2]) if len(sys.argv) > 2 else 8
 cmpf = {'NYC': 'NYC.CMP', 'MIAMI': 'MIAMI.CMP', 'SANB': 'SANB.CMP'}[city]
-style = {'NYC': 'STYLE001', 'MIAMI': 'STYLE002', 'SANB': 'STYLE003'}[city]
+style = {'NYC': 'STYLE001', 'MIAMI': 'STYLE003', 'SANB': 'STYLE002'}[city]
 g = GRY(f'game_data/GTADATA/{style}.GRY')
 c = CMP(f'game_data/GTADATA/{cmpf}')
 pal = bytes(((v << 2) | (v >> 4)) for v in g.pal)
@@ -64,7 +64,9 @@ def rotate_cw(buf, channels):
 
 
 def oriented(buf, channels, rotation):
-    for _ in range((rotation - 1) & 3):
+    # Matches World::emitLidUV and OpenGTA: rotation 1 turns the source tile
+    # 90 degrees clockwise in map space; rotation is a pure cyclic UV offset.
+    for _ in range(rotation & 3):
         buf = rotate_cw(buf, channels)
     return buf
 
@@ -86,8 +88,10 @@ base_rot = [[0] * N for _ in range(N)]
 block_counts = [[0] * N for _ in range(N)]
 for y in range(N):
     for x in range(N):
-        n = c.num_blocks(x, y)
-        b = c.base[x * 256 + y] // 2
+        # parse_formats' CMP methods use the transposed index; swap axes to
+        # match the corrected engine frame (base[y * 256 + x]).
+        n = c.num_blocks(y, x)
+        b = c.base[y * 256 + x] // 2
         block_counts[y][x] = n
         for z in range(n - 1, -1, -1):
             bi = c.column[b + n - z]
@@ -116,7 +120,7 @@ while q:
 # Pass 2: compose.
 for y in range(N):
     for x in range(N):
-        b = c.base[x * 256 + y] // 2
+        b = c.base[y * 256 + x] // 2
         n = block_counts[y][x]
         if n <= 0:
             px = water_px

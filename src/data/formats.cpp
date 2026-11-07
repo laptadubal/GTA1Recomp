@@ -1,5 +1,6 @@
 #include "data/formats.h"
 
+#include <algorithm>
 #include <cstring>
 #include <fstream>
 #include <iterator>
@@ -128,9 +129,41 @@ bool loadCityMap(const std::string& path, CityMap& out, std::string& error) {
         o.roll = rd16(p + 12);
     }
 
-    // Route, locations (36 * 3 bytes) and the named-sector navigation table.
+    // Route records are (u8 vertex count, u8 type, count * (x,y,z)).
+    // The all-zero vertex at the end of a record is retained as authored;
+    // consumers decide whether it is a terminator for their route type.
     offset += map.objectPosSize;
-    offset += map.routeSize;
+    const size_t routeEnd = offset + map.routeSize;
+    if (routeEnd < offset || routeEnd > data.size()) {
+        error = "CMP file truncated in route network";
+        return false;
+    }
+    size_t routePos = offset;
+    while (routePos < routeEnd) {
+        if (routeEnd - routePos < 2) {
+            error = "CMP route record has a truncated header";
+            return false;
+        }
+        const uint8_t vertexCount = data[routePos];
+        MapRoute route;
+        route.type = data[routePos + 1];
+        routePos += 2;
+        const size_t vertexBytes = static_cast<size_t>(vertexCount) * 3;
+        if (vertexBytes > routeEnd - routePos) {
+            error = "CMP route record has truncated vertices";
+            return false;
+        }
+        route.vertices.reserve(vertexCount);
+        for (uint8_t i = 0; i < vertexCount; ++i) {
+            const uint8_t* p = data.data() + routePos + 3 * i;
+            route.vertices.push_back({p[0], p[1], p[2]});
+        }
+        routePos += vertexBytes;
+        map.routes.push_back(std::move(route));
+    }
+
+    // Locations (36 * 3 bytes) and named-sector navigation table.
+    offset = routeEnd;
     offset += 36 * 3;
     if (map.navDataSize >= 35 && offset + map.navDataSize <= data.size()) {
         const size_t sectorCount = map.navDataSize / 35;
@@ -267,10 +300,45 @@ bool loadGry(const std::string& path, GryFile& out, std::string& error) {
     // interleaved decoder can always address complete groups.
     gry.rawTiles.resize(static_cast<size_t>((totalTiles + 3) / 4) * 4 * 4096, 0);
     p += trail;
-    p += gry.animSize;
-    if (p > data.size()) {
+    if (p + gry.animSize > data.size()) {
         error = "GRY truncated in animation data";
         return false;
+    }
+    if (gry.animSize > 0) {
+        const size_t animStart = p;
+        const size_t animEnd = animStart + gry.animSize;
+        size_t animPos = animStart;
+        gry.declaredAnimationCount = data[animPos++];
+        for (uint8_t i = 0; i < gry.declaredAnimationCount; ++i) {
+            if (animEnd - animPos < 4) {
+                gry.animationDataTruncated = true;
+                break;
+            }
+            GryAnimation animation;
+            animation.block = data[animPos++];
+            animation.which = data[animPos++];
+            animation.speed = data[animPos++];
+            const uint8_t frameCount = data[animPos++];
+            if (frameCount > animEnd - animPos) {
+                gry.animationDataTruncated = true;
+                break;
+            }
+            animation.frames.assign(
+                data.begin() + static_cast<std::ptrdiff_t>(animPos),
+                data.begin() + static_cast<std::ptrdiff_t>(animPos + frameCount));
+            animPos += frameCount;
+            const int baseTileCount = animation.which == 0 ? gry.numSide()
+                                                           : gry.numLid();
+            const bool validFrames = std::all_of(
+                animation.frames.begin(), animation.frames.end(),
+                [&](uint8_t frame) { return frame > 0 && frame <= gry.numAux(); });
+            if (animation.block > 0 && animation.which <= 1 &&
+                animation.block <= baseTileCount && animation.speed > 0 &&
+                !animation.frames.empty() && validFrames)
+                gry.animations.push_back(std::move(animation));
+        }
+        if (animPos != animEnd) gry.animationDataTruncated = true;
+        p = animEnd;
     }
 
     if (gry.paletteSize != 768 || p + 768 > data.size()) {
@@ -290,7 +358,16 @@ bool loadGry(const std::string& path, GryFile& out, std::string& error) {
     gry.remapTables.assign(data.begin() + static_cast<std::ptrdiff_t>(p),
                            data.begin() + static_cast<std::ptrdiff_t>(p + gry.remapSize));
     p += gry.remapSize;
-    p += gry.remapIndexSize; // not needed for rendering
+    if (gry.remapIndexSize > 0) {
+        if (p + gry.remapIndexSize > data.size()) {
+            error = "GRY truncated in remap index table";
+            return false;
+        }
+        gry.remapIndexTable.assign(
+            data.begin() + static_cast<std::ptrdiff_t>(p),
+            data.begin() + static_cast<std::ptrdiff_t>(p + gry.remapIndexSize));
+        p += gry.remapIndexSize;
+    }
 
     if (p + gry.objectInfoSize > data.size()) {
         error = "GRY truncated in object info";

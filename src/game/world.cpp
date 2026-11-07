@@ -42,6 +42,7 @@ void World::destroy() {
         if (c.ibo) glDeleteBuffers(1, &c.ibo);
     }
     chunks_.clear();
+    trafficRoadLevels_.clear();
 }
 
 int World::visualHeight(int surface) const {
@@ -72,12 +73,127 @@ int World::roadSurface(int cellX, int cellY) const {
         const MapBlock* block = map.blockAt(cellX, cellY, z);
         if (!block || block->isAir()) continue;
         if (block->isFlat() || block->lid == 0) continue;
-        // Roofs can be asphalt-coloured; only ground-level lids are road.
-        if (z + 1 > static_cast<int>(baseHeight_) + 1) return 0;
-        if (!assets_->isRoadTile(block->lid)) return 0;
+        const MapBlock* above = map.blockAt(cellX, cellY, z + 1);
+        const MapBlock* flags = block->blockType() == 2 ? block : above;
+        if (!flags || flags->blockType() != 2) return 0;
         return visualHeight(z + 1);
     }
     return 0;
+}
+
+uint8_t World::roadDirectionMask(int cellX, int cellY) const {
+    if (!assets_ || cellX < 0 || cellY < 0 ||
+        cellX >= CityMap::kSize || cellY >= CityMap::kSize)
+        return 0;
+
+    const CityMap& map = assets_->map();
+    const int count = map.blockCount(cellX, cellY);
+    for (int z = count - 1; z >= 0; --z) {
+        const MapBlock* block = map.blockAt(cellX, cellY, z);
+        if (!block || block->isAir() || block->isFlat() || block->lid == 0)
+            continue;
+        const MapBlock* above = map.blockAt(cellX, cellY, z + 1);
+        const MapBlock* flags = block->blockType() == 2 ? block : above;
+        if (!flags || flags->blockType() != 2) return 0;
+        return flags->directionMask() != 0 ? flags->directionMask()
+                                           : block->directionMask();
+    }
+    return 0;
+}
+
+int World::trafficSurface(int cellX, int cellY) const {
+    const std::vector<TrafficRoadLevel> levels =
+        trafficRoadLevels(cellX, cellY);
+    return levels.empty() ? 0 : visualHeight(levels.front().rawHeight);
+}
+
+const std::vector<TrafficRoadLevel>& World::trafficRoadLevels(
+    int cellX, int cellY) const {
+    static const std::vector<TrafficRoadLevel> kNoLevels;
+    if (!assets_ || cellX < 0 || cellY < 0 ||
+        cellX >= CityMap::kSize || cellY >= CityMap::kSize)
+        return kNoLevels;
+    const size_t index = static_cast<size_t>(cellY * CityMap::kSize + cellX);
+    return index < trafficRoadLevels_.size() ? trafficRoadLevels_[index]
+                                             : kNoLevels;
+}
+
+int World::trafficSurfaceAt(int cellX, int cellY, int rawHeight) const {
+    for (const TrafficRoadLevel& level : trafficRoadLevels(cellX, cellY)) {
+        if (level.rawHeight == rawHeight) return visualHeight(rawHeight);
+    }
+    return 0;
+}
+
+bool World::isPassableAtRoadLevel(float worldX, float worldZ,
+                                 int rawHeight) const {
+    const int cellX = static_cast<int>(std::floor(worldX));
+    const int cellY = static_cast<int>(std::floor(worldZ));
+    return trafficSurfaceAt(cellX, cellY, rawHeight) > 0 ||
+           isPassable(worldX, worldZ);
+}
+
+int World::trafficNextRawHeight(int fromX, int fromY, int fromRawHeight,
+                                int dirX, int dirY,
+                                bool obeyDirectionMask) const {
+    if (std::abs(dirX) + std::abs(dirY) != 1) return 0;
+    const std::vector<TrafficRoadLevel>& fromLevels =
+        trafficRoadLevels(fromX, fromY);
+    const auto from = std::find_if(
+        fromLevels.begin(), fromLevels.end(), [&](const TrafficRoadLevel& level) {
+            return level.rawHeight == fromRawHeight;
+        });
+    if (from == fromLevels.end()) return 0;
+
+    uint8_t directionBit = 0;
+    if (dirX == 0 && dirY == -1) directionBit = 1u << 0;
+    else if (dirX == 0 && dirY == 1) directionBit = 1u << 1;
+    else if (dirX == -1 && dirY == 0) directionBit = 1u << 2;
+    else directionBit = 1u << 3;
+    if (obeyDirectionMask && from->directionMask != 0 &&
+        !(from->directionMask & directionBit))
+        return 0;
+
+    const int toX = fromX + dirX;
+    const int toY = fromY + dirY;
+    const std::vector<TrafficRoadLevel>& toLevels =
+        trafficRoadLevels(toX, toY);
+    int bestHeight = 0;
+    int bestDistance = 1000;
+    auto rampAlignsWithStep = [&](uint8_t slope) {
+        if (dirX != 0)
+            return (slope >= 5 && slope <= 8) ||
+                   (slope >= 25 && slope <= 40) || slope == 43 || slope == 44;
+        return (slope >= 1 && slope <= 4) ||
+               (slope >= 9 && slope <= 24) || slope == 41 || slope == 42;
+    };
+    for (const TrafficRoadLevel& to : toLevels) {
+        const int shownDelta = std::abs(visualHeight(fromRawHeight) -
+                                        visualHeight(to.rawHeight));
+        const int rawDelta = std::abs(fromRawHeight - to.rawHeight);
+        const bool sameRoadDeck = shownDelta <= 1;
+        const bool rampJoin = rawDelta == 1 &&
+                              (rampAlignsWithStep(from->slope) ||
+                               rampAlignsWithStep(to.slope));
+        if (!sameRoadDeck && !rampJoin) continue;
+        if (rawDelta < bestDistance) {
+            bestDistance = rawDelta;
+            bestHeight = to.rawHeight;
+        }
+    }
+    return bestHeight;
+}
+
+bool World::roadDirectionAllowed(int cellX, int cellY, int dirX, int dirY) const {
+    const uint8_t mask = roadDirectionMask(cellX, cellY);
+    if (mask == 0) return true;
+    uint8_t bit = 0;
+    if (dirX == 0 && dirY == -1) bit = 1u << 0;
+    else if (dirX == 0 && dirY == 1) bit = 1u << 1;
+    else if (dirX == -1 && dirY == 0) bit = 1u << 2;
+    else if (dirX == 1 && dirY == 0) bit = 1u << 3;
+    else return false;
+    return (mask & bit) != 0;
 }
 
 bool World::isPassable(float worldX, float worldZ) const {
@@ -89,6 +205,9 @@ bool World::isPassable(float worldX, float worldZ) const {
     const CityMap& map = assets_->map();
     const int n = map.blockCount(cx, cy);
     if (n <= 0) return false;
+    // Authored road decks are passable even when elevated over buildings or
+    // water. Untagged upper surfaces remain blocked below.
+    if (roadSurface(cx, cy) > 0) return true;
     const int surface = surface_[cy * CityMap::kSize + cx];
     if (surface <= 0) {
         // A column with only decals/floors is walkable unless its floor was
@@ -234,6 +353,30 @@ bool World::build(AssetManager& assets, std::string& error) {
         if (heightHistogram[h] > heightHistogram[baseHeight]) baseHeight = h;
     }
     baseHeight_ = static_cast<uint8_t>(baseHeight);
+
+    // Cache every CMP-tagged road deck, not only the highest one. A street can
+    // continue underneath an overpass in the same (x,y) column, and traffic
+    // must select its deck from the current route height at junctions.
+    trafficRoadLevels_.assign(static_cast<size_t>(cells), {});
+    for (int y = 0; y < CityMap::kSize; ++y) {
+        for (int x = 0; x < CityMap::kSize; ++x) {
+            const int count = map.blockCount(x, y);
+            auto& levels = trafficRoadLevels_[
+                static_cast<size_t>(y * CityMap::kSize + x)];
+            for (int z = count - 1; z >= 0; --z) {
+                const MapBlock* block = map.blockAt(x, y, z);
+                if (!block || block->isAir() || block->isFlat() ||
+                    block->lid == 0)
+                    continue;
+                const MapBlock* above = map.blockAt(x, y, z + 1);
+                const MapBlock* flags = block->blockType() == 2 ? block : above;
+                if (!flags || flags->blockType() != 2) continue;
+                uint8_t mask = flags->directionMask();
+                if (mask == 0) mask = block->directionMask();
+                levels.push_back({z + 1, mask, block->slopeType()});
+            }
+        }
+    }
 
     // Columns that carry only transparent decals (a fence/sign row with no
     // ground block of its own) take the ground texture of the four directly
@@ -516,9 +659,16 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
             pts[j][1] = static_cast<float>(base) + kSlopeRaw[slope][0][j][1];
             pts[j][2] = static_cast<float>(y) +
                         (rawZ + (rawZ > 0.5f ? kSeamEps : -kSeamEps));
-            const int k = (4 - rotation - j) & 3;
-            uu[j] = (k == 1 || k == 2) ? uv.u1 : uv.u0;
-            vv[j] = (k >= 2) ? uv.v1 : uv.v0;
+            // CMP lid rotation is a cyclic UV-corner offset: bit 14 means
+            // 90 degrees and bit 15 means 180 degrees. Keep the vertex order
+            // (bottom-left, bottom-right, top-right, top-left) aligned with
+            // the original renderer; reversing j mirrors every asymmetric
+            // road/roof marking after the city grid is transposed correctly.
+            const int k = (rotation + j) & 3;
+            static constexpr float kU[4] = {0.0f, 1.0f, 1.0f, 0.0f};
+            static constexpr float kV[4] = {1.0f, 1.0f, 0.0f, 0.0f};
+            uu[j] = uv.u0 + kU[k] * (uv.u1 - uv.u0);
+            vv[j] = uv.v0 + kV[k] * (uv.v1 - uv.v0);
         }
         const Vec3 inside{static_cast<float>(x) + 0.5f,
                           static_cast<float>(base) + 0.5f,
@@ -776,10 +926,14 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
                 const int slope = std::min<int>(block->slopeType(), 44);
 
                 if (block->lid) {
+                    const MapBlock* above = map.blockAt(cellX, cellY, z + 1);
+                    const MapBlock* surfaceFlags =
+                        block->blockType() == 2 ? block : above;
                     const bool plainRoad =
                         !flat && cleanRoads_ && z + 1 == top &&
                         top == static_cast<int>(baseHeight_) &&
-                        assets.isRoadTile(block->lid) && !block->left &&
+                        surfaceFlags && surfaceFlags->blockType() == 2 &&
+                        !block->left &&
                         !block->right && !block->top && !block->bottom &&
                         !assets.isStructuralLid(block->lid);
                     if (plainRoad) {

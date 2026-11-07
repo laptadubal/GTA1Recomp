@@ -26,6 +26,7 @@ cities (`NYC`, `MIAMI`, `SANB`) load and run; pick one from the menu or with
 | --- | --- |
 | CMP v331 city maps | ✅ complete loader, chunked 2.5D mesh |
 | GRY v325 tiles + sprites | ✅ palette decode, interleaved tiles, sprite pages |
+| Animated map tiles | ✅ GRY synchronous AUX-frame cycles, shared across map instances |
 | CMP object info/objects | ✅ props, trees, parked cars, street furniture |
 | Original menu artwork | ✅ `F_UPPER`/`F_LOWER0`, animated `F_LOGO0..7`, rotating `F_KEY` key cursor |
 | Developer splashes | ✅ original `F_DMA` + `F_BMG` logos |
@@ -33,9 +34,9 @@ cities (`NYC`, `MIAMI`, `SANB`) load and run; pick one from the menu or with
 | Original menu fonts | ✅ `BIG1.FON` / `BIG2.FON` |
 | Original intro cutscene | ✅ `CUT0` art + `ENGLISH.FXT` dialogue |
 | Original music | ✅ `AUDIO/0.WAV..5.WAV` |
-| Original sound effects | ✅ `LEVEL001.SDT/RAW` bank (UI, crash, pickup, phone) |
+| Original sound effects | ✅ City-matched `LEVEL001..003.SDT/RAW` banks; original vehicle engine loops |
 | Phone missions | ✅ 22 jobs per city, real briefings, district-based targets, rewards |
-| Traffic / pedestrians | ✅ grid AI; peds prefer pavements, traffic follows the road network |
+| Traffic / pedestrians | ⚠️ Traffic follows CMP-tagged road cells and direction flags; police use authored type-255 route loops to approach before pursuit; type-16 traffic-light boxes link to roadblock routes, but roadblock behavior is not implemented; peds prefer pavements |
 | Arbitrary resolutions / resize | ✅ render target follows the window |
 | Windowed / borderless fullscreen | ✅ `F1` or `--fullscreen` |
 | MSAA | ✅ 0/2/4/8/16 via `--msaa` / config |
@@ -46,6 +47,7 @@ cities (`NYC`, `MIAMI`, `SANB`) load and run; pick one from the menu or with
 | Screenshot capture | ✅ `F12` or `--screenshot out.bmp` (F12 writes to the config directory) |
 | Weapons / damage / police | ✅ pistol, UZI, flamethrower, rockets, wanted stars |
 | City map screen | ✅ `Tab`, clean cartographic render of the CMP |
+| Gameplay minimap | ✅ north-up CMP view; surface colors use authored CMP types and markers stay aligned at city edges |
 | Campaign / save game | ✅ autosave, CONTINUE in the menu, city-to-city travel |
 | Vehicle condition / radio | ✅ damage bar, real car names, track readout |
 
@@ -86,13 +88,13 @@ sudo apt install build-essential cmake libsdl2-dev libgl1-mesa-dev
 Windows (vcpkg):
 
 ```powershell
-vcpkg install sdl2:x64-windows
-cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake
+vcpkg install sdl2:x64-windows glew:x64-windows
+cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
 ```
 
-> Windows note: `src/graphics/gl.h` expects an OpenGL loader on Windows. Add
-> GLAD/GLEW to the target and include it before `gl.h`; the rest of the engine
-> uses only OpenGL 3.3 core entry points.
+Windows builds use GLEW to load the OpenGL 3.3 core entry points through SDL's
+current context. CMake locates GLEW from the vcpkg toolchain; macOS and Linux
+continue to use their system OpenGL headers, and Android uses GLES 3.
 
 ### Configure and compile
 
@@ -221,7 +223,7 @@ src/
   input/
     input_manager.*        keyboard, mouse and SDL game controller mapping
   audio/
-    audio_manager.*        procedural engine synthesis via SDL audio
+    audio_manager.*        SDL audio playback for city banks and vehicle loops
   game/
     world.*                city surface queries and chunked mesh builder
     vehicle.*              arcade car physics and collision
@@ -257,7 +259,8 @@ The visual shell is built from the original game assets:
 * menu fonts `BIG1.FON` / `BIG2.FON`, mission text font `F_MTEXT.FON`;
 * intro cutscene `CUT0.RAT` + `CUT0.ACT` with dialogue from `ENGLISH.FXT`;
 * radio/music from `AUDIO/0.WAV..5.WAV`;
-* sound effects from `AUDIO/LEVEL001.SDT` + `LEVEL001.RAW`;
+* city-matched sound effects from `AUDIO/LEVEL001..003.SDT` + matching `RAW`
+  banks, with original vehicle engine loops and a synthesized fallback;
 * mission phones and positions parsed from `MISSION.INI`, briefings from
   `ENGLISH.FXT`;
 * city geometry, props and car/pedestrian/player sprites from `CMP`/`GRY`.
@@ -279,14 +282,17 @@ Approximations that still need reverse engineering of `GTA8.EXE`:
 ## Deviations from the guide
 
 * **Audio**: the guide suggests OpenAL-soft. This build uses SDL2 audio to keep
-  the dependency set small. Original music/SFX banks are streamed, while the
-  engine note is still synthesised.
+  the dependency set small. Music and city-matched SFX use the original banks;
+  vehicle engine loops use the original samples when present and fall back to
+  synthesis when a sample is unavailable.
 * **Shaders**: GLSL is embedded in `src/graphics/shader.cpp` so the executable
   runs without an asset directory. `assets/shaders/` contains reference copies.
 * **Physics**: a compact arcade model lives in `game/vehicle.cpp` instead of a
   direct port of the DOS assembly.
-* **Gameplay**: traffic, pedestrians and phone missions are playable; weapons,
-  damage and the full scripted campaigns are future work.
+* **Gameplay**: traffic, pedestrians, police, vehicle damage and phone missions
+  are playable. Phone briefings and locations come from the original data, but
+  mission objectives are inferred/generated; exact campaign scripts and
+  triggers remain future work. Weapons are not implemented.
 
 ## Legal
 

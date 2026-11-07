@@ -119,6 +119,7 @@ private:
         Vec3 pos{};
         int cellX = 0;
         int cellY = 0;
+        int roadHeight = 0; // raw CMP lid level, so stacked roads stay distinct
         int dirX = 0;
         int dirY = -1;
         float yaw = 0.0f;
@@ -193,6 +194,7 @@ private:
 
     struct PoliceCar {
         Vec3 pos{};
+        int roadHeight = 0;
         float yaw = 0.0f;
         float speed = 0.0f;
         int spriteIndex = 0;
@@ -200,7 +202,11 @@ private:
         float fireCooldown = 1.0f;
         float stuck = 0.0f;
         float spawnCopTimer = 1.0f;
+        int policeRoute = -1;
+        int routePoint = -1;
         bool active = false;
+        bool followingRoute = false;
+        bool routeClosed = false;
     };
 
     struct Cop {
@@ -527,8 +533,6 @@ private:
     int cutsceneIndex_ = 0;
     int cutsceneLine_ = 0;
     float cutsceneLineTimer_ = 0.0f;
-    float cutsceneAnimTime_ = 0.0f;
-    float cutsceneMouthMix_ = 0.0f;
     bool cutsceneThenPlay_ = false;
     bool cutsceneFinished_ = false;
 

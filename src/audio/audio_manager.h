@@ -11,8 +11,8 @@
 
 namespace gta {
 
-// SDL2 audio output.  The engine note is synthesised (soft sine-based rumble)
-// while the original 0.WAV..5.WAV music tracks are streamed from GTADATA.
+// SDL2 audio output. Original SDT samples provide effects and vehicle engines;
+// a synthesized engine remains available when a matching sample is missing.
 class AudioManager {
 public:
     AudioManager() = default;
@@ -28,7 +28,7 @@ public:
     void setMusicVolume(float volume);
     void setEngineVolume(float volume);
     void setMusicEnabled(bool enabled);
-    void setEngine(float speed, float throttle, bool crashing);
+    void setEngine(float speed, float throttle, bool crashing, int sfxId = -1);
     // Street ambience (wind + distant traffic rumble).  The original plays
     // no music while the city is open, only environmental noise, so this
     // bed is what makes the streets feel inhabited.
@@ -62,6 +62,7 @@ private:
     std::atomic<float> throttle_{0.0f};
     std::atomic<float> crash_{0.0f};
     std::atomic<float> ambient_{0.0f};
+    std::atomic<int> engineSfxId_{-1};
     std::atomic<bool> paused_{false};
     std::atomic<bool> musicEnabled_{true};
     std::atomic<int> pickupRequests_{0};
@@ -84,6 +85,8 @@ private:
     std::vector<uint8_t> sfxRaw_;
     std::vector<SfxEntry> sfxEntries_;
     SfxVoice sfxVoices_[8];
+    int activeEngineSfxId_ = -1;
+    double engineSfxPosition_ = 0.0;
 
     double phase_ = 0.0;
     double pickupPhase_ = 0.0;

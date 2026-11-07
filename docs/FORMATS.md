@@ -2,7 +2,8 @@
 
 These notes document the subset of the original formats that the reimplementation
 reads. They were validated against the retail files and cross-checked with the
-OpenGTA reference sources (`tools/OpenGTA`). All integers are little-endian.
+DMA CityScape Data Structure specification and OpenGTA. All integers are
+little-endian.
 
 ## CMP v331 — city map
 
@@ -26,18 +27,25 @@ Layout after the header:
 2. `column[columnSize/2]` (`uint16`).
 3. `blocks[blockSize/8]` (`uint8[8]` per record).
 4. Object positions (`objectPosSize / 14` records of 14 bytes).
-5. Route, locations and nav data (not used yet).
+5. Route records (`routeSize` bytes), then 36 location vertices (108 bytes),
+   then the `navDataSize` sector records.
 
 ### Column lookup
 
-`column[base[x * 256 + y] / 2]` holds the number of **empty levels above the
+`column[base[y * 256 + x] / 2]` holds the number of **empty levels above the
 column**, not the block count.  GTA1 columns are six levels tall, so the real
 height is `n = 6 - column[index]`; a value of 0 means six blocks and 3 means
 three.  The blocks are stored **top to bottom** after that value, so the bottom
 block (level 0) is `column[index + n]` and the top block is `column[index + 1]`.
 
-`blockAt(x, y, z)` in `src/data/formats.h` uses `z = 0` for the lowest block:
+`blockAt(x, y, z)` in `src/data/formats.h` uses `z = 0` for the lowest block
+and the engine's map frame:
 `column[index + n - z]`.
+
+The CMP base is column-major relative to its stored dimensions. All game
+coordinates use `base[y * 256 + x]`; using `base[x * 256 + y]` transposes the
+whole city. `tools/audit_map_orientation.py` compares both interpretations with
+MISSION.INI phones, CMP route coordinates and a Liberty City reference.
 
 Reading the stored value as a block count (an easy mistake) truncates every
 column whose value is 1 or 2 and over-reads columns whose value is 4 or 5,
@@ -58,26 +66,50 @@ above it, which matches the original's flat-ground look.
 7  uint8  lid       roof/road texture index (1-based, 0 = none)
 ```
 
-`typeMapExt` carries the palette remap variant (`(ext >> 3) & 3`, selecting one
-of the four GRY remap rows), the mirror flags (`0x20` = flip top/bottom,
-`0x40` = flip left/right, used for side textures only) and the railway/traffic
-light bits.
+`typeMapExt` bits 0..2 are traffic-light data, bits 3..4 select lid remap
+selector 0..3 (selectors 1..3 resolve through that tile's GRY
+`remap_index` row), bit 5 flips top/bottom, bit 6 flips left/right, and bit 7
+marks railway. The selector is not a direct remap-table number, and remaps do
+not apply to side faces.
 
 `typeMap` helpers:
 
-* bits 0..3: `upOk`, `downOk`, `leftOk`, `rightOk`
-* bits 4..6: block type (0 = flat ground/road, 1..6 = solid/slope variants)
+* bits 0..3: direction permissions for AI vehicles (up, down, left, right)
+* bits 4..6: block type (0 = air, 1 = water, 2 = road, 3 = pavement,
+  4 = field, 5 = building, 6..7 unused)
 * bit 7: flat/transparent flag
 * bits 8..13: slope type
 * bits 14..15: rotation
 
-Road cells are normally a lid-only block with a road texture. A common pattern
-in `NYC.CMP` puts an invisible wall-less "crown" block above the road deck, so
-the engine scans down the column for the first known asphalt lid instead of
-assuming the topmost block is the driving surface.  Roads alternate plain
-asphalt tiles and tiles that carry lane paint, so asphalt is classified by its
-dark neutral-grey tone rather than by the presence of yellow pixels; requiring
-lane paint marks half of every lane as non-road.
+Lid rotation is applied as a cyclic offset of the four UV corners in map
+space, `(rotation + cornerIndex) & 3`; it must not reverse the corner order.
+This matches the independent OpenGTA renderer's `gl_cityview.cpp` mapping and
+the DMA definition of quarter turns.
+
+The block type, direction bits, railway and traffic-light flags for a graphic
+are usually stored in the block directly above the block that carries the
+graphic. Retail data also has road cells where the visible lid block itself is
+type 2. An explicit type 2 on the visible lid takes precedence over a different
+type above; otherwise the nonzero type above supplies the surface class. The
+engine uses the resolved type-2 road tag, so gray
+pavement tiles are not mistaken for roads. Pedestrian passability remains a
+separate check; it can allow pavement and other walkable ground without turning
+them into vehicle lanes. The road tile classifier remains useful for visual
+cleanup of plain asphalt, where lane paint is absent.
+
+### CMP routes and locations
+
+Each route record is `u8 vertexCount, u8 routeType`, followed by
+`vertexCount * (u8 x, u8 y, u8 z)`. Route types `0..253` are numbered roadblock
+routes referenced by traffic-light boxes; type `255` is a police route. Type
+`254` occurs once in NYC but is not classified by the DMA specification, which
+defines roadblock IDs only through 253. Do not treat these records as ordinary
+civilian traffic or pedestrian routes. See [§2.6 of the DMA specification](https://misc.daniel-marschall.de/spiele/gta1/cds.pdf).
+
+After the route bytes, the CMP stores 36 `(x,y,z)` location vertices (police,
+hospital and fire service positions), followed by 35-byte navigation-sector
+records. `loadCityMap()` parses the route records and sectors; the location
+vertices are not yet exposed in `CityMap`.
 
 ### Object record (14 bytes)
 
@@ -94,7 +126,11 @@ lane paint marks half of every lane as non-road.
 misaligns every record after the first (objects pile up at the map corner
 and props land in the wrong streets). The record is exactly 14 bytes with no
 padding. `type` / `remap` select the GRY object (or car) sprite via the
-object-info and car-info tables; `remap >= 128` marks a parked car.
+object-info and car-info tables; `remap >= 128` marks a parked car. Retail
+traffic-light boxes (object type 16) are special: their `rotation` field is a
+roadblock route ID, not a rotation angle. Their associated type `0..253` CMP
+route contains junction waypoints. Objects whose GRY status is 3 are invisible
+logic markers and must not be drawn as sprites.
 
 ## GRY v325 — graphics archive
 
@@ -142,17 +178,31 @@ original engine simply continues into the next section of the same blob, so
 (`aux = lid - numLid`).  The atlas loader therefore resolves every map index by
 its global slot (side → lid → aux) instead of rejecting out-of-range values.
 
-### Animations and palette
+### Synchronous tile animations and palette
 
 After the tiles comes `ceil(totalTiles / 4) * 4 * 4096 - tileBytes` padding,
-then the animation block, then a 768-byte palette.
+then the animation block, then a 768-byte palette. The animation block starts
+with a count, followed by records `block, which, speed, frameCount, frames[]`;
+`which` selects the side or lid bank, frame IDs address auxiliary tiles, and
+`speed` is in game cycles per frame. The original tile is shown before the AUX
+frames loop. The loader parses complete records and uploads the active frame
+into the shared atlas, so all map instances animate in sync. Playback uses a
+30 Hz compatibility clock pending comparison against the DOS executable.
+
+The shipped `STYLE003.GRY` declares three animation records but its 24-byte
+animation block contains only two complete records. The loader keeps those two
+and marks the incomplete tail rather than rejecting Miami's graphics archive.
 
 Palette values are 6-bit VGA components; the loader expands them with
-`(v << 2) | (v >> 4)`. Palette index 0 is transparent for sprites; map tiles are
-kept opaque.
+`(v << 2) | (v >> 4)`. Palette index 0 is transparent for sprites and flat
+world decals; opaque map faces keep their black palette pixels.
 
-Remap tables follow the palette (`256*256` bytes) and are currently loaded but
-unused. Remap indices are skipped.
+The 65,536-byte remap table follows the palette and contains 256 mappings of
+256 palette indices. The following 1,024-byte `remap_index` table has four
+entries per lid ID; for CMP selector 1..3, the entry gives the actual remap
+table ID. The atlas resolves each lid's variants through this lookup. Selector
+0 and table ID 0 preserve the original palette. CMP remaps apply to lids, not
+side faces.
 
 ### Car records
 
@@ -285,8 +335,11 @@ up by key, e.g. `[1002]`, `[cut00]`, `[3501]`, `[car22]`.
 8  uint32 sample rate (Hz)
 ```
 
-The `.RAW` payload is 8-bit unsigned mono (silence = 128).  The engine keeps
-`LEVEL001` as a general SFX bank and resamples each sample to the output rate.
+The `.RAW` payload is 8-bit unsigned mono (silence = 128). The runtime loads
+`LEVEL001`, `LEVEL002`, or `LEVEL003` according to the selected city's CMP style
+byte. Sample playback advances by each record's authored rate and linearly
+interpolates adjacent 8-bit samples at the output rate. Engine loops use the
+original car-specific records when available, with synthesis as a fallback.
 
 ## RAW/RAT/ACT images
 
@@ -296,6 +349,11 @@ The `.RAW` payload is 8-bit unsigned mono (silence = 128).  The engine keeps
 * `CUT0..CUT5.RAT` are 640×480 8-bit palette indices, `CUT*.ACT` are 768-byte
   RGB palettes (8-bit components, not 6-bit).
 * `F_PAL.RAW` is the shared 768-byte palette for the `F_*` intro images.
+
+The cutscene renderer displays each authored RAT frame at its original 4:3
+composition with aspect-preserving scaling. It must not synthesize face/mouth
+movement or camera motion over the still image; those effects are not present
+in the shipped frame data.
 
 ## MISSION.INI
 

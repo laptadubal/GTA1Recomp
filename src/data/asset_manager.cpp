@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -109,6 +110,13 @@ bool AssetManager::load(const std::string& dataDir, const std::string& city,
         return false;
     }
     if (!loadGry(gryPath.string(), gry_, error)) return false;
+    if (gry_.animationDataTruncated) {
+        std::fprintf(stderr,
+                     "warning: %s declares %u tile animations but only %zu complete records fit; playing the complete records\n",
+                     gryPath.filename().string().c_str(),
+                     static_cast<unsigned>(gry_.declaredAnimationCount),
+                     gry_.animations.size());
+    }
 
     classifyRoadLids();
     if (!buildAtlas(error)) return false;
@@ -310,6 +318,7 @@ bool AssetManager::buildMinimap(std::string& error) {
             const int count = map_.blockCount(x, y);
             int top = 0;
             int lid = 0;
+            int surfaceType = -1;
             bool water = false;
             for (int z = count - 1; z >= 0; --z) {
                 const MapBlock* block = map_.blockAt(x, y, z);
@@ -318,7 +327,18 @@ bool AssetManager::buildMinimap(std::string& error) {
                     continue;
                 top = z + 1;
                 lid = block->lid;
-                water = isWaterTile(block->lid);
+                // CMP usually stores its surface class above the visible lid.
+                // Some road cells carry type 2 on the lid itself; preserve
+                // that explicit surface tag over unrelated stacked metadata.
+                const MapBlock* above = map_.blockAt(x, y, z + 1);
+                if (block->blockType() == 2)
+                    surfaceType = 2;
+                else if (above && above->blockType() != 0)
+                    surfaceType = above->blockType();
+                else
+                    surfaceType = block->blockType();
+                water = surfaceType == 1 ||
+                        (surfaceType <= 0 && isWaterTile(block->lid));
                 break;
             }
 
@@ -327,11 +347,14 @@ bool AssetManager::buildMinimap(std::string& error) {
                 r = 34; g = 92; b = 158;
             } else if (top == 0) {
                 r = 24; g = 56; b = 96; // open sea outside the map blocks
-            } else if (isRoadTile(lid)) {
+            } else if (surfaceType == 2 ||
+                       (surfaceType <= 0 && isRoadTile(lid))) {
                 r = 66; g = 68; b = 74;
-            } else if (isGrassTile(lid)) {
+            } else if (surfaceType == 4 ||
+                       (surfaceType <= 0 && isGrassTile(lid))) {
                 r = 74; g = 112; b = 56;
-            } else if (top > groundLevel + 1) {
+            } else if (surfaceType == 5 ||
+                       (surfaceType <= 0 && top > groundLevel + 1)) {
                 // Roof: use the tile's own average colour, slightly darkened.
                 lidColor(lid, r, g, b);
                 r = static_cast<uint8_t>(r * 3 / 4 + 30);
@@ -376,9 +399,8 @@ bool AssetManager::buildAtlas(std::string& error) {
         return false;
     }
 
-    // Four palette variants: the map flags one of the first four remap rows on
-    // each block (road types, building shades).  They live side by side in one
-    // atlas so a chunk can pick the right variant per vertex UV.
+    // Four atlas variants let each CMP lid remap selector resolve through its
+    // own GRY remap_index row. Side faces are never remapped by CMP.
     constexpr int kVariants = 4;
     const int cell = 64;
     const int cols = 16;
@@ -412,7 +434,6 @@ bool AssetManager::buildAtlas(std::string& error) {
     auxUVs_.resize(static_cast<size_t>(std::max(0, slots - sideSlots_ - lidSlots_)));
     slotHasAlpha_.assign(static_cast<size_t>(slots), 0);
 
-    const uint8_t* remapTable = gry_.remapTables.empty() ? nullptr : gry_.remapTables.data();
     std::vector<uint8_t> tile(4096);
     auto placeTile = [&](int slot) {
         if (!gry_.tileData(slot, tile.data())) return;
@@ -420,9 +441,12 @@ bool AssetManager::buildAtlas(std::string& error) {
             const int cx = (slot % cols) * cell + variant * variantStride_;
             const int cy = (slot / cols) * cell;
             const uint8_t* row = nullptr;
-            if (variant > 0 && remapTable &&
-                gry_.remapTables.size() >= static_cast<size_t>(variant + 1) * 256) {
-                row = remapTable + static_cast<size_t>(variant) * 256;
+            if (variant > 0 && slot >= sideSlots_) {
+                const int lidIndex = slot - sideSlots_;
+                const uint8_t tableId = gry_.lidRemapTable(lidIndex, variant);
+                const size_t tableOffset = static_cast<size_t>(tableId) * 256;
+                if (tableId > 0 && gry_.remapTables.size() >= tableOffset + 256)
+                    row = gry_.remapTables.data() + tableOffset;
             }
             for (int y = 0; y < cell; ++y) {
                 for (int x = 0; x < cell; ++x) {
@@ -472,6 +496,30 @@ bool AssetManager::buildAtlas(std::string& error) {
 
     for (int slot = 0; slot < slots; ++slot) placeTile(slot);
 
+    // A tile must stay in the alpha pass if any of its animation frames has
+    // colour-key holes. Some shipped animations change alpha between frames
+    // (STYLE002 lid 69 is opaque in the base tile and partly transparent in
+    // two AUX frames), so classifying only the base image makes the holes draw
+    // as opaque black.
+    std::vector<uint8_t> animationTile(64 * 64);
+    auto hasColourKey = [&](int slot) {
+        if (!gry_.tileData(slot, animationTile.data())) return false;
+        return std::find(animationTile.begin(), animationTile.end(), 0) !=
+               animationTile.end();
+    };
+    for (const GryAnimation& animation : gry_.animations) {
+        const int baseSlot = animation.which == 0
+            ? gry_.sideSlot(animation.block)
+            : gry_.lidSlot(animation.block);
+        if (baseSlot < 0 || baseSlot >= slots) continue;
+        bool transparent = slotHasAlpha_[static_cast<size_t>(baseSlot)] != 0;
+        for (uint8_t frame : animation.frames) {
+            const int frameSlot = gry_.auxSlot(frame);
+            transparent = transparent || hasColourKey(frameSlot);
+        }
+        slotHasAlpha_[static_cast<size_t>(baseSlot)] = transparent ? 1 : 0;
+    }
+
     glGenTextures(1, &atlas_);
     if (!atlas_) {
         error = "failed to create OpenGL atlas texture";
@@ -489,7 +537,81 @@ bool AssetManager::buildAtlas(std::string& error) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glBindTexture(GL_TEXTURE_2D, 0);
+    animationCycles_ = 0.0;
+    animationPhases_.assign(gry_.animations.size(), 0);
     return true;
+}
+
+void AssetManager::updateAnimations(float dt) {
+    if (!atlas_ || dt <= 0.0f || gry_.animations.empty()) return;
+
+    // The retail animation speed is expressed in game cycles. Map those cycles
+    // to a 30 Hz compatibility clock so playback stays stable across desktop
+    // and mobile render rates; verify the exact cadence against the DOS build.
+    constexpr double kCyclesPerSecond = 30.0;
+    animationCycles_ += static_cast<double>(dt) * kCyclesPerSecond;
+
+    for (size_t i = 0; i < gry_.animations.size(); ++i) {
+        const GryAnimation& animation = gry_.animations[i];
+        const size_t phaseCount = animation.frames.size() + 1;
+        const double cyclesPerFrame = std::max<int>(1, animation.speed);
+        const int phase = static_cast<int>(
+            std::fmod(std::floor(animationCycles_ / cyclesPerFrame),
+                      static_cast<double>(phaseCount)));
+        if (phase == animationPhases_[i]) continue;
+        uploadAnimatedTile(animation, phase);
+        animationPhases_[i] = static_cast<uint8_t>(phase);
+    }
+}
+
+void AssetManager::uploadAnimatedTile(const GryAnimation& animation, int phase) {
+    if (!atlas_ || animation.which > 1 || phase < 0 ||
+        phase > static_cast<int>(animation.frames.size()))
+        return;
+
+    const int sourceSlot = phase == 0
+        ? (animation.which == 0 ? gry_.sideSlot(animation.block)
+                               : gry_.lidSlot(animation.block))
+        : gry_.auxSlot(animation.frames[static_cast<size_t>(phase - 1)]);
+    const int baseSlot = animation.which == 0
+        ? gry_.sideSlot(animation.block)
+        : gry_.lidSlot(animation.block);
+    const int baseTileCount = animation.which == 0 ? gry_.numSide()
+                                                   : gry_.numLid();
+    if (animation.block == 0 || animation.block > baseTileCount ||
+        baseSlot < 0 || baseSlot >= gry_.numSide() + gry_.numLid() ||
+        sourceSlot < 0 || sourceSlot >= gry_.totalSlots())
+        return;
+
+    std::vector<uint8_t> indices(64 * 64);
+    if (!gry_.tileData(sourceSlot, indices.data())) return;
+    std::vector<uint8_t> rgba(64 * 64 * 4);
+    const size_t tableBytes = 256;
+    glBindTexture(GL_TEXTURE_2D, atlas_);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    for (int variant = 0; variant < 4; ++variant) {
+        const uint8_t* remap = nullptr;
+        if (variant > 0 && animation.which == 1) {
+            const uint8_t tableId = gry_.lidRemapTable(animation.block, variant);
+            const size_t tableOffset = static_cast<size_t>(tableId) * tableBytes;
+            if (tableId > 0 && gry_.remapTables.size() >= tableOffset + tableBytes)
+                remap = gry_.remapTables.data() + tableOffset;
+        }
+        for (size_t pixel = 0; pixel < indices.size(); ++pixel) {
+            const uint8_t source = indices[pixel];
+            const uint8_t color = remap ? remap[source] : source;
+            const size_t out = pixel * 4;
+            rgba[out + 0] = gry_.palette.rgb[static_cast<size_t>(color) * 3 + 0];
+            rgba[out + 1] = gry_.palette.rgb[static_cast<size_t>(color) * 3 + 1];
+            rgba[out + 2] = gry_.palette.rgb[static_cast<size_t>(color) * 3 + 2];
+            rgba[out + 3] = source == 0 ? 0 : 255;
+        }
+        const int x = (baseSlot % 16) * 64 + variant * variantStride_;
+        const int y = (baseSlot / 16) * 64;
+        glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, 64, 64, GL_RGBA,
+                        GL_UNSIGNED_BYTE, rgba.data());
+    }
+    glBindTexture(GL_TEXTURE_2D, 0);
 }
 
 TileUV AssetManager::remapped(TileUV uv, int remap) const {
@@ -502,19 +624,20 @@ TileUV AssetManager::remapped(TileUV uv, int remap) const {
 }
 
 TileUV AssetManager::sideUV(int index1Based, int remap) const {
+    (void)remap; // GRY remaps are authored for lids only.
     // Side tile N occupies atlas slot N (slot 0 is unused by the maps).
     const int i = index1Based;
     if (i <= 0) return TileUV{};
     const int slot = i;
     if (slot < sideSlots_) {
-        return remapped(sideUVs_[static_cast<size_t>(slot)], remap);
+        return sideUVs_[static_cast<size_t>(slot)];
     }
     if (slot < sideSlots_ + lidSlots_) {
-        return remapped(lidUVs_[static_cast<size_t>(slot - sideSlots_)], remap);
+        return lidUVs_[static_cast<size_t>(slot - sideSlots_)];
     }
     const int aux = slot - sideSlots_ - lidSlots_;
     if (aux >= 0 && aux < static_cast<int>(auxUVs_.size())) {
-        return remapped(auxUVs_[static_cast<size_t>(aux)], remap);
+        return auxUVs_[static_cast<size_t>(aux)];
     }
     return TileUV{};
 }

@@ -62,6 +62,14 @@ std::string prefScreenshotPath(int index) {
     return base + name;
 }
 
+std::string sfxBankPath(const gta::Game& game) {
+    const int style = game.assets().map().style;
+    if (style < 1 || style > 3) return {};
+    char name[32];
+    std::snprintf(name, sizeof(name), "/AUDIO/LEVEL%03d.SDT", style);
+    return game.assets().dataDir() + name;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -208,13 +216,18 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    int loadedSfxStyle = game.assets().map().style;
     {
         std::string sfxError;
-        const std::string sfxPath =
-            game.assets().dataDir() + "/AUDIO/LEVEL001.SDT";
-        if (!audio.loadSfxBank(sfxPath, sfxError)) {
-            std::fprintf(stderr, "warning: %s\n", sfxError.c_str());
+        const std::string sfxPath = sfxBankPath(game);
+        if (sfxPath.empty()) {
+            sfxError = "unsupported CMP sound style " +
+                       std::to_string(game.assets().map().style);
+        } else {
+            audio.loadSfxBank(sfxPath, sfxError);
         }
+        if (!sfxError.empty())
+            std::fprintf(stderr, "warning: %s\n", sfxError.c_str());
     }
 
     game.setDemo(demoMode);
@@ -264,6 +277,20 @@ int main(int argc, char** argv) {
 
         input.newFrame();
         game.update(dt, input, audio);
+        const int cityStyle = game.assets().map().style;
+        if (cityStyle != loadedSfxStyle) {
+            loadedSfxStyle = cityStyle;
+            std::string sfxError;
+            const std::string sfxPath = sfxBankPath(game);
+            if (sfxPath.empty()) {
+                sfxError = "unsupported CMP sound style " +
+                           std::to_string(cityStyle);
+            } else {
+                audio.loadSfxBank(sfxPath, sfxError);
+            }
+            if (!sfxError.empty())
+                std::fprintf(stderr, "warning: %s\n", sfxError.c_str());
+        }
         game.render(renderer);
 
         if (game.screenshotRequested()) {

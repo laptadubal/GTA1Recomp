@@ -29,6 +29,9 @@ endif()
 if(NOT ANDROID)
     find_package(OpenGL REQUIRED)
 endif()
+if(WIN32)
+    find_package(GLEW REQUIRED)
+endif()
 
 # ---------------------------------------------------------------------------
 # Sources
@@ -57,10 +60,15 @@ add_executable(dos_gta_recomp ${GTA_SOURCES})
 target_include_directories(dos_gta_recomp PRIVATE src)
 
 target_link_libraries(dos_gta_recomp PRIVATE ${SDL2_TARGET})
+if(WIN32 AND TARGET SDL2::SDL2main)
+    target_link_libraries(dos_gta_recomp PRIVATE SDL2::SDL2main)
+endif()
 
 if(ANDROID)
     target_compile_definitions(dos_gta_recomp PRIVATE GTA_GLES=1)
     target_link_libraries(dos_gta_recomp PRIVATE GLESv3 EGL log android)
+elseif(WIN32)
+    target_link_libraries(dos_gta_recomp PRIVATE OpenGL::GL GLEW::GLEW)
 else()
     target_link_libraries(dos_gta_recomp PRIVATE OpenGL::GL)
 endif()

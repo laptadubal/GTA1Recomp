@@ -28,6 +28,12 @@ struct CityChunk {
     float minX = 0, minZ = 0, maxX = 0, maxZ = 0;
 };
 
+struct TrafficRoadLevel {
+    int rawHeight = 0;
+    uint8_t directionMask = 0;
+    uint8_t slope = 0;
+};
+
 // Builds a chunked 2.5D mesh out of a CMP map + GRY tile atlas.
 class World {
 public:
@@ -45,6 +51,25 @@ public:
 
     int surfaceHeight(int cellX, int cellY) const;
     int roadSurface(int cellX, int cellY) const;
+    // Surface tagged as road (block type 2), excluding pavement tiles which
+    // share asphalt-like graphics and are still driveable for the player.
+    // All type-2 road lids in a column, ordered from highest to lowest.
+    const std::vector<TrafficRoadLevel>& trafficRoadLevels(int cellX,
+                                                           int cellY) const;
+    // Highest authored road deck in a cell (for single-surface queries).
+    int trafficSurface(int cellX, int cellY) const;
+    int trafficSurfaceAt(int cellX, int cellY, int rawHeight) const;
+    bool isPassableAtRoadLevel(float worldX, float worldZ,
+                               int rawHeight) const;
+    // Resolve the adjacent road level using both the source cell's direction
+    // flags and the authored ramp geometry. Returns 0 when no legal join exists.
+    int trafficNextRawHeight(int fromX, int fromY, int fromRawHeight,
+                             int dirX, int dirY,
+                             bool obeyDirectionMask = true) const;
+    // Direction flags may be stored in the block directly above the road art.
+    // A zero mask means this cell has no authored direction restriction.
+    uint8_t roadDirectionMask(int cellX, int cellY) const;
+    bool roadDirectionAllowed(int cellX, int cellY, int dirX, int dirY) const;
     // Rendered height of a ground column: water, land, pavements and bridge
     // decks are flattened to the city base height, buildings keep their own.
     int visualHeight(int surface) const;
@@ -65,6 +90,7 @@ private:
 
     AssetManager* assets_ = nullptr;
     std::vector<CityChunk> chunks_;
+    std::vector<std::vector<TrafficRoadLevel>> trafficRoadLevels_;
     std::vector<uint8_t> surface_; // highest drawn lid, 0 = no visible top
     std::vector<uint8_t> floorWater_; // 1 = water floor for cells without a top
     // Nearest authored lid/rotation, used as the base under flat decals.

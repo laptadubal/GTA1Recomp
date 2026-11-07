@@ -27,6 +27,9 @@ struct MapBlock {
         return static_cast<uint8_t>((typeMap & 16 ? 1 : 0) + (typeMap & 32 ? 2 : 0) +
                                     (typeMap & 64 ? 4 : 0));
     }
+    // Direction permissions for computer-controlled road traffic:
+    // bit 0 north (-Y), bit 1 south (+Y), bit 2 west (-X), bit 3 east (+X).
+    uint8_t directionMask() const { return static_cast<uint8_t>(typeMap & 15); }
     bool isFlat() const { return (typeMap & 128) != 0; }
     // 0 = flat cube, 1-40 = 7/26-degree ramps, 41-44 = 45-degree ramps.
     uint8_t slopeType() const {
@@ -40,8 +43,7 @@ struct MapBlock {
     uint8_t rotation() const {
         return static_cast<uint8_t>((typeMap & 16384 ? 1 : 0) + (typeMap & 32768 ? 2 : 0));
     }
-    // Palette remap variant (0..3) from the extension flags; selects one of
-    // the four remap rows in the GRY archive.
+    // Lid remap selector (0 = none, 1..3 = lookup via GRY remap_index).
     uint8_t remapIndex() const {
         return static_cast<uint8_t>((typeMapExt >> 3) & 3);
     }
@@ -65,6 +67,15 @@ struct MapObject {
     uint16_t rotation = 0, pitch = 0, roll = 0;
 };
 
+struct MapRouteVertex {
+    uint8_t x = 0, y = 0, z = 0;
+};
+
+struct MapRoute {
+    uint8_t type = 0;
+    std::vector<MapRouteVertex> vertices;
+};
+
 struct CityMap {
     static constexpr int kSize = 256;
     // Every CMP column holds at most six 1-unit levels.
@@ -80,6 +91,7 @@ struct CityMap {
     std::vector<uint16_t> column;  // block columns
     std::vector<MapBlock> blocks;
     std::vector<MapObject> objects;
+    std::vector<MapRoute> routes;
     std::vector<MapSector> sectors;
 
     bool valid() const { return version == 331 && base.size() == kSize * kSize; }
@@ -171,6 +183,13 @@ struct Palette {
     void apply(const uint8_t* indices, int count, uint8_t* rgba, bool transparentZero) const;
 };
 
+struct GryAnimation {
+    uint8_t block = 0;       // original side/lid tile number (1-based)
+    uint8_t which = 0;       // 0 = side, 1 = lid
+    uint8_t speed = 0;       // game cycles per frame
+    std::vector<uint8_t> frames; // 1-based auxiliary tile numbers
+};
+
 struct GryFile {
     uint32_t version = 0;
     uint32_t sideSize = 0, lidSize = 0, auxSize = 0, animSize = 0;
@@ -184,6 +203,10 @@ struct GryFile {
     std::vector<uint8_t> rawTiles;
     Palette palette;
     std::vector<uint8_t> remapTables; // 256 * 256
+    std::vector<uint8_t> remapIndexTable; // 256 lids * four selectors
+    std::vector<GryAnimation> animations;
+    uint8_t declaredAnimationCount = 0;
+    bool animationDataTruncated = false;
     std::vector<uint8_t> spriteGraphics;
     std::vector<GrySpriteInfo> sprites;
     std::vector<GryObjectInfo> objectsInfo;
@@ -199,6 +222,13 @@ struct GryFile {
     int sideSlot(int index1Based) const { return index1Based; }
     int lidSlot(int index1Based) const { return numSide() + index1Based; }
     int auxSlot(int index1Based) const { return numSide() + numLid() + index1Based; }
+    uint8_t lidRemapTable(int lidIndex1Based, int selector) const {
+        if (lidIndex1Based < 0 || lidIndex1Based > 255 || selector < 0 ||
+            selector > 3)
+            return 0;
+        const size_t index = static_cast<size_t>(lidIndex1Based) * 4 + selector;
+        return index < remapIndexTable.size() ? remapIndexTable[index] : 0;
+    }
     int totalSlots() const {
         return static_cast<int>(rawTiles.size() / 4096);
     }

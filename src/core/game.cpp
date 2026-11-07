@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -51,6 +52,18 @@ std::string cityDisplayName(const std::string& city) {
     if (city == "SANB") return "SAN ANDREAS";
     if (city == "MIAMI") return "VICE CITY";
     return city;
+}
+
+Vec3 trafficLanePosition(int cellX, int cellY, int rawHeight, int dirX,
+                         int dirY, const World& world) {
+    // GTA's cities use right-hand traffic. Keep ambient cars slightly to the
+    // right of the road-cell centre; changing direction at a junction then
+    // moves the next target onto the new lane and naturally rounds the turn.
+    constexpr float kLaneOffset = 0.18f;
+    const int surface = world.trafficSurfaceAt(cellX, cellY, rawHeight);
+    return Vec3{cellX + 0.5f - static_cast<float>(dirY) * kLaneOffset,
+                static_cast<float>(surface),
+                cellY + 0.5f + static_cast<float>(dirX) * kLaneOffset};
 }
 
 } // namespace
@@ -1758,6 +1771,7 @@ bool Game::showScreen(const std::string& name) {
 void Game::update(float dt, InputManager& input, AudioManager& audio) {
     dt = std::clamp(dt, 0.0f, 0.1f);
     worldTime_ += dt;
+    assets_.updateAnimations(dt);
     if (dt > 0.0f) {
         const float instant = 1.0f / dt;
         fps_ += (instant - fps_) * 0.08f;
@@ -1896,21 +1910,6 @@ void Game::updateCutscene(float dt, InputManager& input, AudioManager& audio) {
         cutsceneMusicStarted_ = true;
     }
 
-    cutsceneAnimTime_ += dt;
-    // Talking cadence for the cutscene face: a rhythmic open/close with
-    // short "breathing" pauses in between.
-    {
-        const float ct = cutsceneAnimTime_;
-        const float breath = std::sin(ct * 0.9f);
-        const float speaking = breath > -0.55f;
-        const float phase = std::fmod(ct / 0.16f, 1.0f);
-        float target = 0.0f;
-        if (speaking && phase > 0.08f && phase < 0.55f) {
-            target = 1.0f - std::abs(phase - 0.315f) / 0.235f;
-        }
-        cutsceneMouthMix_ += (target - cutsceneMouthMix_) *
-                             std::min(1.0f, dt * 22.0f);
-    }
 
     const int lineCount = cutsceneLineCount(fxt_, cutsceneIndex_);
     const bool next = input.pressed(GameAction::MenuSelect) ||
@@ -1980,7 +1979,6 @@ void Game::updateMainMenu(float dt, InputManager& input, AudioManager& audio) {
     }
     const int count = mainMenuItemCount();
     const int cityRow = hasSave() ? 2 : 1;
-    const float spacing = mainMenuSpacing();
     if (input.pressed(GameAction::MenuUp)) {
         menuIndex_ = (menuIndex_ + count - 1) % count;
     }
@@ -2558,8 +2556,18 @@ void Game::updatePlaying(float dt, InputManager& input, AudioManager& audio) {
     updateMission(dt, input, audio);
 
     audio.setPaused(false);
+    int engineSfxId = -1;
+    if (inCar_ && !modal) {
+        for (const GryCarInfo& car : assets_.gry().cars) {
+            if (assets_.gry().carSpriteIndex(car.sprNum) == spriteIndex_) {
+                engineSfxId = 79 + car.sprNum;
+                break;
+            }
+        }
+    }
     audio.setEngine(inCar_ && !modal ? vehicle_.speed() : 0.0f,
-                    inCar_ && !modal ? controls.throttle : 0.0f, false);
+                    inCar_ && !modal ? controls.throttle : 0.0f, false,
+                    engineSfxId);
 }
 
 void Game::updateCityMap(InputManager& input, AudioManager& audio) {
@@ -2984,9 +2992,26 @@ void Game::spawnTraffic() {
                             traffic_.size() < 30; ++attempt) {
         const int x = coordinate(rng_);
         const int y = coordinate(rng_);
-        const int surface = world_.roadSurface(x, y);
-        if (surface <= 0) continue;
-        const Vec3 pos{x + 0.5f, static_cast<float>(surface), y + 0.5f};
+        const std::vector<TrafficRoadLevel>& roadLevels =
+            world_.trafficRoadLevels(x, y);
+        if (roadLevels.empty()) continue;
+        struct SpawnChoice { int rawHeight; int direction; };
+        std::vector<SpawnChoice> spawnChoices;
+        for (const TrafficRoadLevel& level : roadLevels) {
+            for (int k = 0; k < 4; ++k) {
+                if (world_.trafficNextRawHeight(x, y, level.rawHeight,
+                                                dirs[k][0], dirs[k][1]) > 0)
+                    spawnChoices.push_back({level.rawHeight, k});
+            }
+        }
+        if (spawnChoices.empty()) continue;
+        std::uniform_int_distribution<size_t> pickSpawn(0,
+                                                        spawnChoices.size() - 1);
+        const SpawnChoice spawn = spawnChoices[pickSpawn(rng_)];
+        const Vec3 pos = trafficLanePosition(x, y, spawn.rawHeight,
+                                             dirs[spawn.direction][0],
+                                             dirs[spawn.direction][1], world_);
+        if (pos.y <= 0.0f) continue;
         const float dx = pos.x - player.x;
         const float dz = pos.z - player.z;
         const float d2 = dx * dx + dz * dz;
@@ -2995,7 +3020,8 @@ void Game::spawnTraffic() {
         for (const TrafficCar& other : traffic_) {
             const float ox = other.pos.x - pos.x;
             const float oz = other.pos.z - pos.z;
-            if (ox * ox + oz * oz < 16.0f) {
+            if (ox * ox + oz * oz < 16.0f &&
+                std::abs(other.pos.y - pos.y) < 1.5f) {
                 tooClose = true;
                 break;
             }
@@ -3013,25 +3039,13 @@ void Game::spawnTraffic() {
         car.pos = pos;
         car.cellX = x;
         car.cellY = y;
+        car.roadHeight = spawn.rawHeight;
         car.spriteIndex = sprite;
         car.width = widthPixels / 64.0f;
         car.height = heightPixels / 64.0f;
 
-        int choice = -1;
-        int count = 0;
-        for (int k = 0; k < 4; ++k) {
-            const int s = world_.roadSurface(x + dirs[k][0], y + dirs[k][1]);
-            if (s > 0 && std::abs(s - surface) <= 1) {
-                ++count;
-                if (std::uniform_int_distribution<int>(1, count)(rng_) == 1)
-                    choice = k;
-            }
-        }
-        if (choice < 0) {
-            continue;
-        }
-        car.dirX = dirs[choice][0];
-        car.dirY = dirs[choice][1];
+        car.dirX = dirs[spawn.direction][0];
+        car.dirY = dirs[spawn.direction][1];
         car.yaw = std::atan2(static_cast<float>(car.dirX),
                              -static_cast<float>(car.dirY));
         traffic_.push_back(car);
@@ -3045,15 +3059,14 @@ void Game::updateTraffic(float dt) {
     std::uniform_int_distribution<int> coordinate(0, CityMap::kSize - 1);
 
     auto chooseDirection = [&](TrafficCar& car, bool allowReverse) {
-        const int current = world_.roadSurface(car.cellX, car.cellY);
         int options[4];
         int count = 0;
         for (int k = 0; k < 4; ++k) {
             const int dx = dirs[k][0];
             const int dy = dirs[k][1];
             if (!allowReverse && dx == -car.dirX && dy == -car.dirY) continue;
-            const int s = world_.roadSurface(car.cellX + dx, car.cellY + dy);
-            if (s > 0 && std::abs(s - current) <= 1) {
+            if (world_.trafficNextRawHeight(car.cellX, car.cellY,
+                                            car.roadHeight, dx, dy) > 0) {
                 options[count++] = k;
             }
         }
@@ -3061,8 +3074,8 @@ void Game::updateTraffic(float dt) {
             for (int k = 0; k < 4; ++k) {
                 const int dx = dirs[k][0];
                 const int dy = dirs[k][1];
-                const int s = world_.roadSurface(car.cellX + dx, car.cellY + dy);
-                if (s > 0 && std::abs(s - current) <= 1) {
+                if (world_.trafficNextRawHeight(car.cellX, car.cellY,
+                                                car.roadHeight, dx, dy) > 0) {
                     options[count++] = k;
                 }
             }
@@ -3079,9 +3092,14 @@ void Game::updateTraffic(float dt) {
         for (int attempt = 0; attempt < 4000; ++attempt) {
             const int x = coordinate(rng_);
             const int y = coordinate(rng_);
-            const int surface = world_.roadSurface(x, y);
-            if (surface <= 0) continue;
-            const Vec3 pos{x + 0.5f, static_cast<float>(surface), y + 0.5f};
+            const std::vector<TrafficRoadLevel>& levels =
+                world_.trafficRoadLevels(x, y);
+            if (levels.empty()) continue;
+            const TrafficRoadLevel& level = levels[
+                std::uniform_int_distribution<size_t>(0, levels.size() - 1)(rng_)];
+            const Vec3 pos = trafficLanePosition(x, y, level.rawHeight,
+                                                 car.dirX, car.dirY, world_);
+            if (pos.y <= 0.0f) continue;
             const float dx = pos.x - player.x;
             const float dz = pos.z - player.z;
             const float d2 = dx * dx + dz * dz;
@@ -3089,6 +3107,7 @@ void Game::updateTraffic(float dt) {
             car.pos = pos;
             car.cellX = x;
             car.cellY = y;
+            car.roadHeight = level.rawHeight;
             car.stuck = 0.0f;
             car.health = 100.0f;
             car.dead = false;
@@ -3110,22 +3129,30 @@ void Game::updateTraffic(float dt) {
             continue;
         }
 
-        const int current = world_.roadSurface(car.cellX, car.cellY);
-        int nextSurface =
-            world_.roadSurface(car.cellX + car.dirX, car.cellY + car.dirY);
-        if (nextSurface <= 0 || std::abs(nextSurface - current) > 1) {
+        int nextRawHeight = world_.trafficNextRawHeight(
+            car.cellX, car.cellY, car.roadHeight, car.dirX, car.dirY);
+        int nextSurface = nextRawHeight > 0
+            ? world_.trafficSurfaceAt(car.cellX + car.dirX,
+                                      car.cellY + car.dirY, nextRawHeight)
+            : 0;
+        if (nextSurface <= 0) {
             if (!chooseDirection(car, false)) {
                 car.stuck += dt;
                 if (car.stuck > 1.0f) respawn(car);
                 continue;
             }
-            nextSurface =
-                world_.roadSurface(car.cellX + car.dirX, car.cellY + car.dirY);
+            nextRawHeight = world_.trafficNextRawHeight(
+                car.cellX, car.cellY, car.roadHeight, car.dirX, car.dirY);
+            nextSurface = nextRawHeight > 0
+                ? world_.trafficSurfaceAt(car.cellX + car.dirX,
+                                          car.cellY + car.dirY, nextRawHeight)
+                : 0;
+            if (nextSurface <= 0) continue;
         }
 
-        const Vec3 target{car.cellX + car.dirX + 0.5f,
-                          static_cast<float>(nextSurface),
-                          car.cellY + car.dirY + 0.5f};
+        const Vec3 target = trafficLanePosition(
+            car.cellX + car.dirX, car.cellY + car.dirY, nextRawHeight,
+            car.dirX, car.dirY, world_);
         float dx = target.x - car.pos.x;
         float dz = target.z - car.pos.z;
         float distance = std::sqrt(dx * dx + dz * dz);
@@ -3134,6 +3161,7 @@ void Game::updateTraffic(float dt) {
         // car) instead of driving through it.
         float speedScale = 1.0f;
         auto blockedBy = [&](const Vec3& other) {
+            if (std::abs(other.y - car.pos.y) >= 1.5f) return false;
             const float ox = other.x - car.pos.x;
             const float oz = other.z - car.pos.z;
             const float along =
@@ -3158,15 +3186,16 @@ void Game::updateTraffic(float dt) {
         if (distance <= std::max(step, 0.05f)) {
             car.cellX += car.dirX;
             car.cellY += car.dirY;
+            car.roadHeight = nextRawHeight;
             car.pos = target;
             car.stuck = 0.0f;
 
-            const int currentSurf = world_.roadSurface(car.cellX, car.cellY);
             int neighbours = 0;
             for (const auto& dir : dirs) {
-                const int s = world_.roadSurface(car.cellX + dir[0],
-                                                 car.cellY + dir[1]);
-                if (s > 0 && std::abs(s - currentSurf) <= 1) ++neighbours;
+                if (world_.trafficNextRawHeight(
+                        car.cellX, car.cellY, car.roadHeight,
+                        dir[0], dir[1]) > 0)
+                    ++neighbours;
             }
 
             int options[4];
@@ -3178,9 +3207,10 @@ void Game::updateTraffic(float dt) {
                 const int stepX = dirs[k][0];
                 const int stepY = dirs[k][1];
                 if (stepX == -car.dirX && stepY == -car.dirY) continue;
-                const int s = world_.roadSurface(car.cellX + stepX,
-                                                 car.cellY + stepY);
-                if (s <= 0 || std::abs(s - currentSurf) > 1) continue;
+                if (world_.trafficNextRawHeight(
+                        car.cellX, car.cellY, car.roadHeight,
+                        stepX, stepY) <= 0)
+                    continue;
                 options[count++] = k;
                 if (stepX == car.dirX && stepY == car.dirY) straight = k;
                 if (stepX == car.dirY && stepY == -car.dirX) left = k;
@@ -3211,9 +3241,10 @@ void Game::updateTraffic(float dt) {
                 car.stuck += dt;
             }
         } else if (distance > 0.0001f) {
-            car.pos.x += dx / distance * step;
-            car.pos.z += dz / distance * step;
-            car.pos.y = target.y;
+            const float fraction = std::clamp(step / distance, 0.0f, 1.0f);
+            car.pos.x += dx * fraction;
+            car.pos.z += dz * fraction;
+            car.pos.y += (target.y - car.pos.y) * fraction;
         }
 
         const float desiredYaw =
@@ -3422,7 +3453,6 @@ void Game::spawnProps() {
 
         WorldProp prop;
         prop.pos = Vec3{x, y, z};
-        prop.yaw = object.rotation * (2.0f * kPi / 1024.0f);
 
         if (object.remap >= 128) {
             const GryCarInfo* car = nullptr;
@@ -3433,6 +3463,7 @@ void Game::spawnProps() {
                 }
             }
             if (!car) continue;
+            prop.yaw = object.rotation * (2.0f * kPi / 1024.0f);
             const int sprite = gry.carSpriteIndex(car->sprNum);
             if (sprite < 0 ||
                 sprite >= static_cast<int>(gry.sprites.size()))
@@ -3442,6 +3473,15 @@ void Game::spawnProps() {
             prop.height = gry.sprites[sprite].h / 64.0f;
         } else {
             if (object.type == 0 || object.type == 255) continue;
+            if (object.type >= gry.objectsInfo.size()) continue;
+            // Status 3 objects are map logic markers (for example invisible
+            // road/area boxes), not sprites to draw into the city.
+            if (gry.objectsInfo[object.type].status == 3) continue;
+            // Retail object type 16 is the traffic-light box. Per CMP spec,
+            // its "rotation" field stores a roadblock route ID, not a yaw.
+            prop.yaw = object.type == 16
+                           ? 0.0f
+                           : object.rotation * (2.0f * kPi / 1024.0f);
             const int sprite = gry.objectSpriteIndex(object.type);
             if (sprite < 0 ||
                 sprite >= static_cast<int>(gry.sprites.size()))
@@ -4225,6 +4265,101 @@ void Game::updateParticles(float dt) {
 }
 
 void Game::updatePolice(float dt, AudioManager& audio) {
+    struct PatrolPoint {
+        int x = 0;
+        int z = 0;
+        int rawHeight = 0;
+        Vec3 pos{};
+    };
+    const auto& mapRoutes = assets_.map().routes;
+    auto policeRoutePoints = [&](int routeIndex) {
+        std::vector<PatrolPoint> points;
+        if (routeIndex < 0 || routeIndex >= static_cast<int>(mapRoutes.size()))
+            return points;
+        const MapRoute& route = mapRoutes[static_cast<size_t>(routeIndex)];
+        if (route.type != 255) return points;
+        for (const MapRouteVertex& vertex : route.vertices) {
+            if (vertex.x == 0 && vertex.y == 0 && vertex.z == 0) continue;
+            // Route Z counts downward from the top of the six-level CMP
+            // column. Retail route points match raw road height 5-Z; if that
+            // exact deck is absent, retain the highest available road level.
+            int rawHeight = vertex.z < CityMap::kMaxLevels
+                                ? CityMap::kMaxLevels - 1 - vertex.z
+                                : 0;
+            int pointX = vertex.x;
+            int pointY = vertex.y;
+            int surface = rawHeight > 0
+                ? world_.trafficSurfaceAt(pointX, pointY, rawHeight)
+                : 0;
+            if (surface <= 0 && rawHeight > 0) {
+                // Some authored police waypoints fall one cell beside the
+                // road, at the seam between consecutive road-grid points.
+                // Snap only to an adjacent cell carrying the exact route Z
+                // deck; never pull a patrol across a block or to another deck.
+                static constexpr int kSnapDirs[4][2] = {
+                    {0, -1}, {0, 1}, {-1, 0}, {1, 0}};
+                int bestDistance = std::numeric_limits<int>::max();
+                for (const auto& dir : kSnapDirs) {
+                    const int candidateX = vertex.x + dir[0];
+                    const int candidateY = vertex.y + dir[1];
+                    if (world_.trafficSurfaceAt(candidateX, candidateY,
+                                                rawHeight) <= 0)
+                        continue;
+                    const int continuity = points.empty()
+                        ? 0
+                        : std::abs(candidateX - points.back().x) +
+                              std::abs(candidateY - points.back().z);
+                    if (continuity < bestDistance) {
+                        bestDistance = continuity;
+                        pointX = candidateX;
+                        pointY = candidateY;
+                    }
+                }
+                if (bestDistance != std::numeric_limits<int>::max()) {
+                    surface = world_.trafficSurfaceAt(pointX, pointY,
+                                                      rawHeight);
+                }
+            }
+            if (surface <= 0) {
+                const auto& levels =
+                    world_.trafficRoadLevels(pointX, pointY);
+                if (levels.empty()) continue;
+                rawHeight = levels.front().rawHeight;
+                surface = world_.trafficSurfaceAt(pointX, pointY,
+                                                  rawHeight);
+            }
+            if (surface <= 0) continue;
+            if (!points.empty() && points.back().x == pointX &&
+                points.back().z == pointY &&
+                points.back().rawHeight == rawHeight)
+                continue;
+            points.push_back({pointX, pointY, rawHeight,
+                              Vec3{pointX + 0.5f,
+                                   static_cast<float>(surface),
+                                   pointY + 0.5f}});
+        }
+        if (points.size() > 2 && points.front().x == points.back().x &&
+            points.front().z == points.back().z &&
+            points.front().rawHeight == points.back().rawHeight)
+            points.pop_back();
+        return points;
+    };
+    auto policeRouteClosed = [&](int routeIndex) {
+        if (routeIndex < 0 || routeIndex >= static_cast<int>(mapRoutes.size()))
+            return false;
+        const MapRoute& route = mapRoutes[static_cast<size_t>(routeIndex)];
+        if (route.type != 255 || route.vertices.size() < 2) return false;
+        const MapRouteVertex& first = route.vertices.front();
+        size_t lastIndex = route.vertices.size() - 1;
+        while (lastIndex > 0 && route.vertices[lastIndex].x == 0 &&
+               route.vertices[lastIndex].y == 0 &&
+               route.vertices[lastIndex].z == 0)
+            --lastIndex;
+        const MapRouteVertex& last = route.vertices[lastIndex];
+        return first.x == last.x && first.y == last.y &&
+               first.z == last.z;
+    };
+
     if (wantedLevel_ > 0) {
         sirenTimer_ -= dt;
         if (sirenTimer_ <= 0.0f) {
@@ -4248,11 +4383,60 @@ void Game::updatePolice(float dt, AudioManager& audio) {
         const int desired = std::min(wantedLevel_, 3);
         if (policeSpawnTimer_ <= 0.0f &&
             static_cast<int>(policeCars_.size()) < desired) {
+            const Vec3 player = playerPosition();
+            int selectedRoute = -1;
+            int selectedPoint = -1;
+            int candidateCount = 0;
+            for (int routeIndex = 0;
+                 routeIndex < static_cast<int>(mapRoutes.size()); ++routeIndex) {
+                const std::vector<PatrolPoint> points =
+                    policeRoutePoints(routeIndex);
+                for (int pointIndex = 0;
+                     pointIndex < static_cast<int>(points.size()); ++pointIndex) {
+                    const float dx = points[static_cast<size_t>(pointIndex)].pos.x - player.x;
+                    const float dz = points[static_cast<size_t>(pointIndex)].pos.z - player.z;
+                    const float d2 = dx * dx + dz * dz;
+                    if (d2 < 26.0f * 26.0f || d2 > 58.0f * 58.0f) continue;
+                    ++candidateCount;
+                    if (std::uniform_int_distribution<int>(0, candidateCount - 1)(rng_) == 0) {
+                        selectedRoute = routeIndex;
+                        selectedPoint = pointIndex;
+                    }
+                }
+            }
+
             Vec3 spawnPos{};
-            if (chooseRoadLocation(playerPosition(), 26.0f, 58.0f, spawnPos)) {
+            int spawnRoadHeight = 0;
+            bool routeSpawned = selectedRoute >= 0 && selectedPoint >= 0;
+            bool spawnFound = routeSpawned;
+            if (routeSpawned) {
+                const std::vector<PatrolPoint> points =
+                    policeRoutePoints(selectedRoute);
+                const PatrolPoint& point =
+                    points[static_cast<size_t>(selectedPoint)];
+                spawnPos = point.pos;
+                spawnRoadHeight = point.rawHeight;
+            } else {
+                spawnFound = chooseRoadLocation(player, 26.0f, 58.0f,
+                                                spawnPos);
+                if (spawnFound) {
+                    const auto& levels = world_.trafficRoadLevels(
+                        static_cast<int>(std::floor(spawnPos.x)),
+                        static_cast<int>(std::floor(spawnPos.z)));
+                    if (!levels.empty())
+                        spawnRoadHeight = levels.front().rawHeight;
+                }
+            }
+            if (spawnFound) {
                 PoliceCar car;
                 car.pos = spawnPos;
+                car.roadHeight = spawnRoadHeight;
                 car.active = true;
+                car.followingRoute = routeSpawned;
+                car.policeRoute = routeSpawned ? selectedRoute : -1;
+                car.routePoint = routeSpawned ? selectedPoint : -1;
+                car.routeClosed = routeSpawned &&
+                                  policeRouteClosed(selectedRoute);
                 car.health = 140.0f;
                 car.spriteIndex = 48;
                 if (car.spriteIndex >= static_cast<int>(assets_.gry().sprites.size()) ||
@@ -4260,8 +4444,8 @@ void Game::updatePolice(float dt, AudioManager& audio) {
                     car.spriteIndex = randomCarSprite();
                 }
                 if (car.spriteIndex >= 0) {
-                    car.yaw = std::atan2(playerPosition().x - spawnPos.x,
-                                        -(playerPosition().z - spawnPos.z));
+                    car.yaw = std::atan2(player.x - spawnPos.x,
+                                        -(player.z - spawnPos.z));
                     assets_.spriteTexture(car.spriteIndex);
                     policeCars_.push_back(car);
                 }
@@ -4283,7 +4467,82 @@ void Game::updatePolice(float dt, AudioManager& audio) {
             continue;
         }
 
-        const float desired = std::atan2(dx, -dz);
+        float desired = std::atan2(dx, -dz);
+        int routeNextPoint = -1;
+        std::vector<PatrolPoint> patrol;
+        if (car.followingRoute) {
+            patrol = policeRoutePoints(car.policeRoute);
+            if (patrol.size() < 2) {
+                car.followingRoute = false;
+            } else {
+                int currentPoint = std::clamp(
+                    car.routePoint, 0, static_cast<int>(patrol.size()) - 1);
+                int targetPoint = 0;
+                float targetDistance2 = std::numeric_limits<float>::max();
+                for (int i = 0; i < static_cast<int>(patrol.size()); ++i) {
+                    const float tx = patrol[static_cast<size_t>(i)].pos.x - player.x;
+                    const float tz = patrol[static_cast<size_t>(i)].pos.z - player.z;
+                    const float d2 = tx * tx + tz * tz;
+                    if (d2 < targetDistance2) {
+                        targetDistance2 = d2;
+                        targetPoint = i;
+                    }
+                }
+
+                // The patrol loops bring police onto the player's road network;
+                // close pursuit then takes over so the car can intercept.
+                if (targetDistance2 <= 6.0f * 6.0f ||
+                    targetDistance2 > 38.0f * 38.0f ||
+                    targetPoint == currentPoint) {
+                    car.followingRoute = false;
+                } else {
+                    auto routeDistance = [&](int direction) {
+                        float distanceAlongRoute = 0.0f;
+                        int index = currentPoint;
+                        for (size_t steps = 0; index != targetPoint &&
+                             steps < patrol.size(); ++steps) {
+                            int next = index + direction;
+                            if (car.routeClosed) {
+                                next = (next + static_cast<int>(patrol.size())) %
+                                       static_cast<int>(patrol.size());
+                            } else if (next < 0 ||
+                                       next >= static_cast<int>(patrol.size())) {
+                                return std::numeric_limits<float>::max();
+                            }
+                            const Vec3& a = patrol[static_cast<size_t>(index)].pos;
+                            const Vec3& b = patrol[static_cast<size_t>(next)].pos;
+                            const float sx = b.x - a.x;
+                            const float sz = b.z - a.z;
+                            distanceAlongRoute += std::sqrt(sx * sx + sz * sz);
+                            index = next;
+                        }
+                        return distanceAlongRoute;
+                    };
+                    const int direction = car.routeClosed
+                        ? (routeDistance(1) <= routeDistance(-1) ? 1 : -1)
+                        : (targetPoint > currentPoint ? 1 : -1);
+                    routeNextPoint = currentPoint + direction;
+                    if (car.routeClosed) {
+                        routeNextPoint =
+                            (routeNextPoint + static_cast<int>(patrol.size())) %
+                            static_cast<int>(patrol.size());
+                    } else if (routeNextPoint < 0 ||
+                               routeNextPoint >= static_cast<int>(patrol.size())) {
+                        car.followingRoute = false;
+                        routeNextPoint = -1;
+                    }
+                    if (routeNextPoint < 0) {
+                        desired = std::atan2(dx, -dz);
+                    } else {
+                    const Vec3& waypoint =
+                        patrol[static_cast<size_t>(routeNextPoint)].pos;
+                    const float wx = waypoint.x - car.pos.x;
+                    const float wz = waypoint.z - car.pos.z;
+                    desired = std::atan2(wx, -wz);
+                    }
+                }
+            }
+        }
         float difference = desired - car.yaw;
         while (difference > kPi) difference -= 2.0f * kPi;
         while (difference < -kPi) difference += 2.0f * kPi;
@@ -4293,27 +4552,89 @@ void Game::updatePolice(float dt, AudioManager& audio) {
                                                   : 3.5f;
         car.speed += (targetSpeed - car.speed) * std::min(1.0f, dt * 2.0f);
 
-        const Vec3 next{car.pos.x + std::sin(car.yaw) * car.speed * dt,
-                        car.pos.y,
-                        car.pos.z - std::cos(car.yaw) * car.speed * dt};
-        if (world_.isDrivable(next.x, next.z)) {
+        Vec3 next{car.pos.x + std::sin(car.yaw) * car.speed * dt,
+                  car.pos.y,
+                  car.pos.z - std::cos(car.yaw) * car.speed * dt};
+        int nextRoadHeight = car.roadHeight;
+        bool drivable = world_.isDrivable(next.x, next.z);
+        if (car.followingRoute) {
+            const int nextCellX = static_cast<int>(std::floor(next.x));
+            const int nextCellY = static_cast<int>(std::floor(next.z));
+            int routeSurface = world_.trafficSurfaceAt(
+                nextCellX, nextCellY, car.roadHeight);
+            if (routeSurface <= 0 && routeNextPoint >= 0) {
+                const int targetHeight =
+                    patrol[static_cast<size_t>(routeNextPoint)].rawHeight;
+                routeSurface = world_.trafficSurfaceAt(
+                    nextCellX, nextCellY, targetHeight);
+                if (routeSurface > 0) nextRoadHeight = targetHeight;
+            }
+            drivable = routeSurface > 0;
+            if (drivable) next.y = static_cast<float>(routeSurface);
+        } else if (car.roadHeight > 0) {
+            const int currentCellX = static_cast<int>(std::floor(car.pos.x));
+            const int currentCellY = static_cast<int>(std::floor(car.pos.z));
+            const int nextCellX = static_cast<int>(std::floor(next.x));
+            const int nextCellY = static_cast<int>(std::floor(next.z));
+            const int dxCell = nextCellX - currentCellX;
+            const int dyCell = nextCellY - currentCellY;
+            int pursuitSurface = 0;
+            if (dxCell == 0 && dyCell == 0) {
+                pursuitSurface = world_.trafficSurfaceAt(
+                    nextCellX, nextCellY, car.roadHeight);
+            } else if (std::abs(dxCell) + std::abs(dyCell) == 1) {
+                nextRoadHeight = world_.trafficNextRawHeight(
+                    currentCellX, currentCellY, car.roadHeight,
+                    dxCell, dyCell, false);
+                if (nextRoadHeight > 0) {
+                    pursuitSurface = world_.trafficSurfaceAt(
+                        nextCellX, nextCellY, nextRoadHeight);
+                }
+            }
+            drivable = pursuitSurface > 0;
+            if (drivable) next.y = static_cast<float>(pursuitSurface);
+        }
+        if (drivable) {
             car.pos = next;
+            car.roadHeight = nextRoadHeight;
             car.stuck = std::max(0.0f, car.stuck - dt);
+            if (routeNextPoint >= 0) {
+                const Vec3& waypoint =
+                    patrol[static_cast<size_t>(routeNextPoint)].pos;
+                const float wx = waypoint.x - car.pos.x;
+                const float wz = waypoint.z - car.pos.z;
+                if (wx * wx + wz * wz < 0.45f * 0.45f) {
+                    car.pos = waypoint;
+                    car.routePoint = routeNextPoint;
+                    car.roadHeight =
+                        patrol[static_cast<size_t>(routeNextPoint)].rawHeight;
+                }
+            }
         } else {
             car.stuck += dt;
+            if (routeNextPoint >= 0) car.followingRoute = false;
             car.speed *= 0.55f;
             car.yaw += (jitter(rng_) > 0.0f ? 1.0f : -1.0f) * 1.8f * dt;
             if (car.stuck > 5.0f) {
                 Vec3 respawn{};
                 if (chooseRoadLocation(player, 24.0f, 45.0f, respawn)) {
                     car.pos = respawn;
+                    const auto& levels = world_.trafficRoadLevels(
+                        static_cast<int>(std::floor(respawn.x)),
+                        static_cast<int>(std::floor(respawn.z)));
+                    car.roadHeight = levels.empty()
+                        ? 0
+                        : levels.front().rawHeight;
                     car.stuck = 0.0f;
                 }
             }
         }
-        const int surface =
-            world_.roadSurface(static_cast<int>(std::floor(car.pos.x)),
-                               static_cast<int>(std::floor(car.pos.z)));
+        const int cellX = static_cast<int>(std::floor(car.pos.x));
+        const int cellY = static_cast<int>(std::floor(car.pos.z));
+        int surface = car.roadHeight > 0
+            ? world_.trafficSurfaceAt(cellX, cellY, car.roadHeight)
+            : 0;
+        if (surface <= 0) surface = world_.roadSurface(cellX, cellY);
         if (surface > 0) car.pos.y = static_cast<float>(surface);
 
         car.fireCooldown -= dt;
@@ -5051,69 +5372,12 @@ void Game::renderCutscene(Renderer& renderer) {
     frame.offsetY = (h - 480.0f * frame.scale) * 0.5f;
 
     if (cutsceneTextures_[cutsceneIndex_]) {
-        // The original scenes breathe: a slow push-in, a faint light
-        // flicker, a bobbing head and a talking mouth.  Only one still
-        // frame ships per city (CUT*.RAW is a single 640x480 image), so the
-        // motion is synthesised from sub-rectangles of that image.
-        struct FaceRect {
-            float hx0, hy0, hx1, hy1;
-            float mx0, my0, mx1, my1;
-        };
-        static const FaceRect kFaces[6] = {
-            {30, 5, 195, 175, 70, 92, 135, 128},  // CUT0: Liberty City
-            {350, 25, 485, 185, 382, 100, 455, 138}, // CUT1: San Andreas
-            {60, 35, 150, 120, 85, 75, 125, 95},
-            {270, 15, 360, 115, 292, 68, 340, 92},
-            {370, 20, 490, 165, 402, 90, 465, 130}, // CUT4: Vice City
-            {30, 5, 195, 175, 70, 92, 135, 128},
-        };
-        const FaceRect& face =
-            kFaces[cutsceneIndex_ % static_cast<int>(sizeof(kFaces) /
-                                                     sizeof(kFaces[0]))];
-
-        const float t = cutsceneAnimTime_;
-        const float zoom = 1.0f + 0.045f * std::min(1.0f, t / 12.0f);
-        const float z = frame.scale * zoom;
-        const float cx =
-            w * 0.5f + std::sin(t * 0.07f) * 6.0f * frame.scale;
-        const float cy = h * 0.5f +
-                         std::max(-8.0f, std::min(8.0f, -t * 0.4f)) *
-                             frame.scale * 0.4f;
-        const float flicker = 0.97f + 0.015f * std::sin(t * 9.1f) +
-                              0.012f * std::sin(t * 17.3f + 1.7f);
-        float alpha = flicker;
-        if (cutsceneLine_ == 0) {
-            alpha *= std::min(1.0f, cutsceneLineTimer_ / 0.5f + 0.25f);
-        }
-
-        const float bobY = std::sin(t * kPi * 2.0f * 0.8f) * 1.4f * z;
-        const float bobX =
-            std::sin(t * kPi * 2.0f * 0.37f + 0.9f) * 1.0f * z;
-
-        auto sub = [&](float px0, float py0, float px1, float py1,
-                       float r, float g, float b, float a,
-                       float offX = 0.0f, float offY = 0.0f) {
-            const float sx = cx - 320.0f * z + px0 * z + offX;
-            const float sy = cy - 240.0f * z + py0 * z + offY;
-            drawTexturedRect(renderer,  //
-                cutsceneTextures_[cutsceneIndex_],
-                sx, sy, (px1 - px0) * z, (py1 - py0) * z,
-                px0 / 640.0f, py0 / 480.0f, px1 / 640.0f, py1 / 480.0f, r, g,
-                b, a);
-        };
-
-        // Full scene.
-        sub(0, 0, 640, 480, alpha, alpha, alpha, alpha);
-        // Head: gentle bob so the face feels alive.
-        sub(face.hx0, face.hy0, face.hx1, face.hy1, alpha, alpha, alpha,
-            alpha, bobX, bobY);
-        // Mouth: the cadence is computed in updateCutscene.
-        if (cutsceneMouthMix_ > 0.01f) {
-            const float m = cutsceneMouthMix_;
-            const float bright = 1.0f - 0.24f * m * alpha;
-            sub(face.mx0, face.my0, face.mx1, face.my1, bright, bright,
-                bright, alpha, bobX, bobY + m * 1.6f * z);
-        }
+        // CUT*.RAT is an authored 640x480 still. Keep its composition intact:
+        // do not invent camera movement, facial animation, or overlays over
+        // parts of the source image.
+        drawTexturedRect(renderer, cutsceneTextures_[cutsceneIndex_],
+                         frame.offsetX, frame.offsetY, 640.0f * frame.scale,
+                         480.0f * frame.scale, 0, 0, 1, 1, 1, 1, 1, 1);
     }
 
     const std::string key =
@@ -5308,7 +5572,6 @@ void Game::renderMainMenu(Renderer& renderer) {
 void Game::renderSettings(Renderer& renderer, bool fromPause) {
     const float w = static_cast<float>(renderer.width());
     const float h = static_cast<float>(renderer.height());
-    const float s = uiScale();
     (void)w;
     (void)h;
     if (originalAssets_ && !fromPause) {
@@ -6131,18 +6394,22 @@ void Game::drawMinimap(Renderer& renderer) {
     const float cx = x + size * 0.5f;
     const float cy = y + size * 0.5f;
     const float radius = size * 0.5f - 6.0f * s;
+    const float mapWorldX0 = u0 * 256.0f;
+    const float mapWorldZ0 = v0 * 256.0f;
 
     auto mapOffset = [&](const Vec3& p, float& outX, float& outY) {
-        outX = (p.x - player.x) / span * mapSize;
-        outY = (p.z - player.z) / span * mapSize;
-        const float length = std::sqrt(outX * outX + outY * outY);
+        outX = mapX + (p.x - mapWorldX0) / span * mapSize;
+        outY = mapY + (p.z - mapWorldZ0) / span * mapSize;
+        float dx = outX - cx;
+        float dy = outY - cy;
+        const float length = std::sqrt(dx * dx + dy * dy);
         const float limit = radius - 5.0f * s;
         if (length > limit && length > 0.001f) {
-            outX *= limit / length;
-            outY *= limit / length;
+            dx *= limit / length;
+            dy *= limit / length;
+            outX = cx + dx;
+            outY = cy + dy;
         }
-        outX += cx;
-        outY += cy;
     };
 
     // Mission objective marker.
@@ -6182,19 +6449,23 @@ void Game::drawMinimap(Renderer& renderer) {
             g = 0.7f;
             b = 1.0f;
         }
-        const float dx = (pickup.pos.x - player.x) / span * mapSize;
-        const float dy = (pickup.pos.z - player.z) / span * mapSize;
+        float bx = 0.0f, by = 0.0f;
+        mapOffset(pickup.pos, bx, by);
+        const float dx = bx - cx;
+        const float dy = by - cy;
         if (std::sqrt(dx * dx + dy * dy) > mapSize * 0.5f - 4.0f * s) continue;
         const float radiusPx = 2.2f * s;
-        drawRect(renderer, cx + dx - radiusPx, cy + dy - radiusPx,
+        drawRect(renderer, bx - radiusPx, by - radiusPx,
                  radiusPx * 2.0f, radiusPx * 2.0f, r, g, b, 1.0f);
     }
     for (const TrafficCar& car : traffic_) {
         if (car.dead) continue;
-        const float dx = (car.pos.x - player.x) / span * mapSize;
-        const float dy = (car.pos.z - player.z) / span * mapSize;
+        float bx = 0.0f, by = 0.0f;
+        mapOffset(car.pos, bx, by);
+        const float dx = bx - cx;
+        const float dy = by - cy;
         if (std::sqrt(dx * dx + dy * dy) > mapSize * 0.5f - 4.0f * s) continue;
-        drawRect(renderer, cx + dx - 1.6f * s, cy + dy - 1.6f * s,
+        drawRect(renderer, bx - 1.6f * s, by - 1.6f * s,
                  3.2f * s, 3.2f * s, 0.62f, 0.66f, 0.72f, 0.85f);
     }
     for (const PoliceCar& car : policeCars_) {
@@ -6215,22 +6486,25 @@ void Game::drawMinimap(Renderer& renderer) {
     }
 
     // Player arrow, north-up map.
+    float playerMapX = 0.0f, playerMapY = 0.0f;
+    mapOffset(player, playerMapX, playerMapY);
     const float yaw = inCar_ ? vehicle_.yaw() : footYaw_;
     const float fx = std::sin(yaw);
     const float fz = -std::cos(yaw);
     const float px = -fz;
     const float pz = fx;
     const float arrow = 9.0f * s;
-    const Vec3 tip{cx + fx * arrow, cy + fz * arrow, 0.0f};
-    const Vec3 left{cx - fx * arrow * 0.55f + px * arrow * 0.65f,
-                    cy - fz * arrow * 0.55f + pz * arrow * 0.65f, 0.0f};
-    const Vec3 right{cx - fx * arrow * 0.55f - px * arrow * 0.65f,
-                     cy - fz * arrow * 0.55f - pz * arrow * 0.65f, 0.0f};
-    const Vec3 tipO{cx + fx * arrow * 1.25f, cy + fz * arrow * 1.25f, 0.0f};
-    const Vec3 leftO{cx - fx * arrow * 0.7f + px * arrow * 0.85f,
-                     cy - fz * arrow * 0.7f + pz * arrow * 0.85f, 0.0f};
-    const Vec3 rightO{cx - fx * arrow * 0.7f - px * arrow * 0.85f,
-                      cy - fz * arrow * 0.7f - pz * arrow * 0.85f, 0.0f};
+    const Vec3 tip{playerMapX + fx * arrow, playerMapY + fz * arrow, 0.0f};
+    const Vec3 left{playerMapX - fx * arrow * 0.55f + px * arrow * 0.65f,
+                    playerMapY - fz * arrow * 0.55f + pz * arrow * 0.65f, 0.0f};
+    const Vec3 right{playerMapX - fx * arrow * 0.55f - px * arrow * 0.65f,
+                     playerMapY - fz * arrow * 0.55f - pz * arrow * 0.65f, 0.0f};
+    const Vec3 tipO{playerMapX + fx * arrow * 1.25f,
+                    playerMapY + fz * arrow * 1.25f, 0.0f};
+    const Vec3 leftO{playerMapX - fx * arrow * 0.7f + px * arrow * 0.85f,
+                     playerMapY - fz * arrow * 0.7f + pz * arrow * 0.85f, 0.0f};
+    const Vec3 rightO{playerMapX - fx * arrow * 0.7f - px * arrow * 0.85f,
+                      playerMapY - fz * arrow * 0.7f - pz * arrow * 0.85f, 0.0f};
     drawColoredTriangle(renderer, tipO, leftO, rightO, 0.0f, 0.0f, 0.0f, 0.85f);
     drawColoredTriangle(renderer, tip, left, right, 1.0f, 1.0f, 1.0f, 1.0f);
 
