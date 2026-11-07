@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -321,7 +322,11 @@ void Renderer::endFrame() {
                           GL_COLOR_BUFFER_BIT, GL_LINEAR);
     }
 
-    SDL_GL_SwapWindow(window_);
+    // Debug escape hatch: on hosts where the macOS window server blocks
+    // SDL_GL_SwapWindow (backgrounded session), keep rendering into the FBO
+    // chain and skip the present so --screenshot can still complete.
+    static const bool noSwap = std::getenv("GTA_NOSWAP") != nullptr;
+    if (!noSwap) SDL_GL_SwapWindow(window_);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_BLEND);
@@ -397,15 +402,27 @@ bool Renderer::saveScreenshot(const std::string& path, std::string& error) {
     const int w = windowW_;
     const int h = windowH_;
     std::vector<uint8_t> rgba(static_cast<size_t>(w) * h * 4);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    // Debug escape hatch (GTA_NOSWAP): the present is skipped so the front
+    // buffer never updates; capture from the resolved scene FBO instead.
+    bool captured = false;
+    if (std::getenv("GTA_NOSWAP") && resolveFbo_ != 0 && renderW_ == w &&
+        renderH_ == h) {
+        glBindFramebuffer(GL_FRAMEBUFFER, resolveFbo_);
+        glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        captured = true;
+    }
+    if (!captured) {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 #ifndef GTA_GLES
     glReadBuffer(GL_FRONT);
 #endif
-    glPixelStorei(GL_PACK_ALIGNMENT, 1);
     glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
 #ifndef GTA_GLES
     glReadBuffer(GL_BACK);
 #endif
+    }
 
     const int rowSize = w * 3;
     const int padding = (4 - (rowSize % 4)) % 4;

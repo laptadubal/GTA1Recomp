@@ -225,11 +225,12 @@ bool World::build(AssetManager& assets, std::string& error) {
     }
     baseHeight_ = static_cast<uint8_t>(baseHeight);
 
-    // Columns that only carry a transparent decal (fence, sign, road paint)
-    // have no surface texture of their own.  Use the most common texture of
-    // their immediate neighbours as the base; this keeps crosswalks on
-    // asphalt and fences on grass instead of leaving dark holes or blue
-    // squares in the middle of streets.
+    // Columns that carry only transparent decals (a fence/sign row with no
+    // ground block of its own) take the ground texture of the four directly
+    // adjacent cells.  The original maps always place such columns next to
+    // authored sidewalks/roads, so one hop is all that is ever needed.
+    // Nothing further is propagated: open water and empty gaps are left to
+    // the explicit water/grass floors below.
     for (int y = 0; y < CityMap::kSize; ++y) {
         for (int x = 0; x < CityMap::kSize; ++x) {
             const size_t index = static_cast<size_t>(y * CityMap::kSize + x);
@@ -239,64 +240,25 @@ bool World::build(AssetManager& assets, std::string& error) {
             int bestLid = 0;
             int bestCount = 0;
             uint8_t bestRot = 0;
-            for (int radius = 1; radius <= 3 && bestLid == 0; ++radius) {
-                for (int dy = -radius; dy <= radius; ++dy) {
-                    for (int dx = -radius; dx <= radius; ++dx) {
-                        if (std::max(std::abs(dx), std::abs(dy)) != radius)
-                            continue;
-                        const int nx = x + dx;
-                        const int ny = y + dy;
-                        if (nx < 0 || ny < 0 || nx >= CityMap::kSize ||
-                            ny >= CityMap::kSize)
-                            continue;
-                        const size_t ni =
-                            static_cast<size_t>(ny * CityMap::kSize + nx);
-                        const int lid = baseLid_[ni];
-                        if (lid == 0) continue;
-                        const int count = ++counts[lid];
-                        if (count > bestCount) {
-                            bestCount = count;
-                            bestLid = lid;
-                            bestRot = baseRot_[ni];
-                        }
-                    }
+            const int nx[4] = {x - 1, x + 1, x, x};
+            const int ny[4] = {y, y, y - 1, y + 1};
+            for (int d = 0; d < 4; ++d) {
+                if (nx[d] < 0 || ny[d] < 0 || nx[d] >= CityMap::kSize ||
+                    ny[d] >= CityMap::kSize)
+                    continue;
+                const size_t ni =
+                    static_cast<size_t>(ny[d] * CityMap::kSize + nx[d]);
+                const int lid = baseLid_[ni];
+                if (lid == 0) continue;
+                const int count = ++counts[lid];
+                if (count > bestCount) {
+                    bestCount = count;
+                    bestLid = lid;
+                    bestRot = baseRot_[ni];
                 }
             }
             baseLid_[index] = static_cast<uint8_t>(bestLid);
             baseRot_[index] = bestRot;
-        }
-    }
-
-    // Remaining empty cells (open sea, park lakes) inherit the closest base
-    // so the preview/floor code has a sensible texture for the coastline.
-    {
-        std::vector<uint8_t> visited(static_cast<size_t>(cells), 0);
-        std::vector<int> queue;
-        queue.reserve(static_cast<size_t>(cells));
-        for (int i = 0; i < cells; ++i) {
-            if (baseLid_[static_cast<size_t>(i)] != 0) {
-                visited[static_cast<size_t>(i)] = 1;
-                queue.push_back(i);
-            }
-        }
-        for (size_t head = 0; head < queue.size(); ++head) {
-            const int index = queue[head];
-            const int x = index % CityMap::kSize;
-            const int y = index / CityMap::kSize;
-            const int nx[4] = {x - 1, x + 1, x, x};
-            const int ny[4] = {y, y, y - 1, y + 1};
-            for (int i = 0; i < 4; ++i) {
-                if (nx[i] < 0 || ny[i] < 0 || nx[i] >= CityMap::kSize ||
-                    ny[i] >= CityMap::kSize)
-                    continue;
-                const size_t next =
-                    static_cast<size_t>(ny[i] * CityMap::kSize + nx[i]);
-                if (visited[next]) continue;
-                visited[next] = 1;
-                baseLid_[next] = baseLid_[static_cast<size_t>(index)];
-                baseRot_[next] = baseRot_[static_cast<size_t>(index)];
-                queue.push_back(static_cast<int>(next));
-            }
         }
     }
 
@@ -450,11 +412,11 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
     const bool dbgNoSides = dbgFilter == "nosides";
     const bool dbgNoLids = dbgFilter == "nolids";
     const bool dbgNoFloor = dbgFilter == "nofloor";
+    const bool dbgIdColor = dbgFilter == "idcolor";
 
     std::vector<uint32_t> opaqueIndex;
     std::vector<uint32_t> alphaIndex;
 
-    const TileUV fallbackWall = assets.sideUV(1);
     const TileUV waterFloor = assets.lidUV(assets.waterFallbackLid());
     const TileUV grassFloor = assets.lidUV(assets.grassFallbackLid());
 
@@ -521,12 +483,10 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
         }
     };
 
-    // A horizontal tile. "base" is the height the raw model's y=0 maps to;
-    // the raw lid of every model is at y=1, so the visible surface is base+1.
-    // The four lid corners of all 45 models are ordered SW, SE, NE, NW; the
-    // rotation bits rotate the texture assignment exactly like the original.
-    auto emitLidUV = [&](int x, int y, int base, const TileUV& uv,
-                         int rotation, int slope, bool transparent) {
+    auto emitLidUV = [&](int x, int y, int base, const TileUV& uvIn,
+                         int rotation, int slope, bool transparent,
+                         float cr = 1.0f, float cg = 1.0f, float cb = 1.0f) {
+        TileUV uv = uvIn;
         if (uv.u1 <= uv.u0 || uv.v1 <= uv.v0) return;
         if (slope < 0 || slope > 44) slope = 0;
         rotation &= 3;
@@ -544,8 +504,8 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
         const Vec3 inside{static_cast<float>(x) + 0.5f,
                           static_cast<float>(base) + 0.5f,
                           static_cast<float>(y) + 0.5f};
-        addFace(transparent ? alphaIndex : opaqueIndex, pts, uu, vv, 1.0f, 1.0f,
-                1.0f, inside);
+        addFace(transparent ? alphaIndex : opaqueIndex, pts, uu, vv, cr, cg,
+                cb, inside);
     };
 
     auto emitLid = [&](int x, int y, int base, uint8_t lid, int remap,
@@ -556,8 +516,15 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
         // behaviour: they render in the alpha-test pass so the holes show
         // whatever is behind instead of coming out solid black.
         if (assets.lidHasAlpha(lid)) transparent = true;
-        emitLidUV(x, y, base, assets.lidUV(lid, remap), rotation, slope,
-                  transparent);
+        TileUV uv = assets.lidUV(lid, remap);
+        float cr = 1.0f, cg = 1.0f, cb = 1.0f;
+        if (dbgIdColor) {
+            uv = assets.whiteUV();
+            cr = static_cast<float>((lid * 37) % 256) / 255.0f;
+            cg = static_cast<float>((lid * 101) % 256) / 255.0f;
+            cb = static_cast<float>((lid * 151) % 256) / 255.0f;
+        }
+        emitLidUV(x, y, base, uv, rotation, slope, transparent, cr, cg, cb);
     };
 
     // A vertical face on one of the four cell edges.  The original engine
@@ -567,8 +534,15 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
                         int remap, bool mirror, bool transparent) {
         if (!tile) return;
         if (dbgNoSides) return;
-        const TileUV uv = assets.sideUV(tile, remap);
+        TileUV uv = assets.sideUV(tile, remap);
         if (uv.u1 <= uv.u0 || uv.v1 <= uv.v0) return;
+        float cr = 1.0f, cg = 1.0f, cb = 1.0f;
+        if (dbgIdColor) {
+            uv = assets.whiteUV();
+            cr = static_cast<float>((tile * 37) % 256) / 255.0f;
+            cg = static_cast<float>((tile * 101) % 256) / 255.0f;
+            cb = static_cast<float>((tile * 151) % 256) / 255.0f;
+        }
         const MapBlock* block = map.blockAt(x, y, base);
         int slope = block ? block->slopeType() : 0;
         if (slope < 0 || slope > 44) slope = 0;
@@ -592,8 +566,8 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
         const Vec3 inside{static_cast<float>(x) + 0.5f,
                           static_cast<float>(base) + 0.5f,
                           static_cast<float>(y) + 0.5f};
-        addFace(transparent ? alphaIndex : opaqueIndex, pts, uu, vv, 1.0f, 1.0f,
-                1.0f, inside);
+        addFace(transparent ? alphaIndex : opaqueIndex, pts, uu, vv, cr, cg,
+                cb, inside);
     };
 
     // Highest visible (non-transparent) block of a column.  Used only to skip
@@ -607,55 +581,6 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
             if (!b || b->isAir() || b->isFlat()) continue;
             if (b->lid || b->left || b->right || b->top || b->bottom)
                 return z + 1;
-        }
-        return 0;
-    };
-
-    // Nearest authored tile for an exposed face that has no texture of its
-    // own.  GTA1 only omits a facade on 3-8% of exposed faces; filling those
-    // from neighbouring authored tiles keeps the city watertight without
-    // inventing new walls.
-    auto findSideTile = [&](int x, int y, int z, int face,
-                            int& remapOut) -> uint8_t {
-        remapOut = 0;
-        const int n = map.blockCount(x, y);
-        for (int d = 0; d < CityMap::kMaxLevels; ++d) {
-            for (int pass = 0; pass < 2; ++pass) {
-                if (d == 0 && pass == 1) continue;
-                const int lz = (pass == 0) ? z - d : z + d;
-                if (lz < 0 || lz >= n) continue;
-                const MapBlock* b = map.blockAt(x, y, lz);
-                if (!b) continue;
-                const uint8_t tile = fieldOf(*b, faces[face].fieldIndex);
-                if (tile) {
-                    remapOut = b->remapIndex();
-                    return tile;
-                }
-            }
-        }
-        for (int radius = 1; radius <= 3; ++radius) {
-            for (int dy = -radius; dy <= radius; ++dy) {
-                for (int dx = -radius; dx <= radius; ++dx) {
-                    if (std::max(std::abs(dx), std::abs(dy)) != radius)
-                        continue;
-                    const int nx = x + dx;
-                    const int ny = y + dy;
-                    if (nx < 0 || ny < 0 || nx >= CityMap::kSize ||
-                        ny >= CityMap::kSize)
-                        continue;
-                    const int nn = map.blockCount(nx, ny);
-                    for (int lz = nn - 1; lz >= 0; --lz) {
-                        const MapBlock* b = map.blockAt(nx, ny, lz);
-                        if (!b || b->isAir()) continue;
-                        const uint8_t tile =
-                            fieldOf(*b, faces[face].fieldIndex);
-                        if (tile) {
-                            remapOut = b->remapIndex();
-                            return tile;
-                        }
-                    }
-                }
-            }
         }
         return 0;
     };
@@ -848,16 +773,8 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
                         const int ny = cellY + faces[f].ny;
                         if (z < opaqueTop(nx, ny)) continue;
                         uint8_t tile = fieldOf(*block, faces[f].fieldIndex);
-                        int remap = block->remapIndex();
-                        if (!tile) {
-                            tile = findSideTile(cellX, cellY, z, f, remap);
-                            if (!tile) {
-                                if (fallbackWall.u1 <= fallbackWall.u0)
-                                    continue;
-                                tile = 1;
-                                remap = 0;
-                            }
-                        }
+                        if (!tile) continue; // no authored face: leave open
+                        const int remap = block->remapIndex();
                         const bool mirror = faces[f].mirrorTopBottom
                                                 ? block->flipTopBottom()
                                                 : block->flipLeftRight();
