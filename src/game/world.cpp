@@ -8,6 +8,16 @@ namespace gta {
 
 namespace {
 
+// Micro-overlap for adjacent coplanar surface quads.  The original renderer
+// tiled road/roof/side surfaces edge-to-edge with no seams; in 3D, two
+// triangles that meet at an exact shared edge leave 1-4 px rasterisation
+// gaps through which the y=0 ground quad shows.  Extending every surface and
+// facade corner outward by this amount makes neighbouring quads overlap by
+// the same amount so the tiling reads as one continuous surface.  Verified
+// for all 45 slope models: every lid footprint spans the full unit square in
+// x and z, and every side face spans its free axis over [0,1].
+constexpr float kSeamEps = 0.005f;
+
 // Original GTA1 cube/slope models (45 types).  Face order inside each model:
 //   0 = lid, 1 = z=1 side, 2 = z=0 side, 3 = x=0 side, 4 = x=1 side.
 // Vertices are local to one cube: x/z in [0,1], y in [0,1].
@@ -495,9 +505,13 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
         float uu[4];
         float vv[4];
         for (int j = 0; j < 4; ++j) {
-            pts[j][0] = static_cast<float>(x) + kSlopeRaw[slope][0][j][0];
+            const float rawX = kSlopeRaw[slope][0][j][0];
+            const float rawZ = kSlopeRaw[slope][0][j][2];
+            pts[j][0] = static_cast<float>(x) +
+                        (rawX + (rawX > 0.5f ? kSeamEps : -kSeamEps));
             pts[j][1] = static_cast<float>(base) + kSlopeRaw[slope][0][j][1];
-            pts[j][2] = static_cast<float>(y) + kSlopeRaw[slope][0][j][2];
+            pts[j][2] = static_cast<float>(y) +
+                        (rawZ + (rawZ > 0.5f ? kSeamEps : -kSeamEps));
             const int k = (4 - rotation - j) & 3;
             uu[j] = (k == 1 || k == 2) ? uv.u1 : uv.u0;
             vv[j] = (k >= 2) ? uv.v1 : uv.v0;
@@ -564,12 +578,21 @@ bool World::buildChunk(int cx, int cy, std::vector<CityVertex>& vertices,
         float uu[4];
         float vv[4];
         for (int j = 0; j < 4; ++j) {
-            pts[j][0] = static_cast<float>(x) +
-                        kSlopeRaw[slope][faces[face].rawFace][j][0];
-            pts[j][1] = static_cast<float>(base) +
-                        kSlopeRaw[slope][faces[face].rawFace][j][1];
-            pts[j][2] = static_cast<float>(y) +
-                        kSlopeRaw[slope][faces[face].rawFace][j][2];
+            const float rawX = kSlopeRaw[slope][faces[face].rawFace][j][0];
+            const float rawY = kSlopeRaw[slope][faces[face].rawFace][j][1];
+            const float rawZ = kSlopeRaw[slope][faces[face].rawFace][j][2];
+            // Free-axis overlap for every facade plane, height overlap for
+            // flat blocks only (see kSeamEps).
+            float ex = 0.0f, ey = 0.0f, ez = 0.0f;
+            if (faces[face].rawFace <= 1)
+                ex = rawX > 0.5f ? kSeamEps : -kSeamEps;
+            else
+                ez = rawZ > 0.5f ? kSeamEps : -kSeamEps;
+            if (slope == 0)
+                ey = rawY > 0.5f ? kSeamEps : -kSeamEps;
+            pts[j][0] = static_cast<float>(x) + rawX + ex;
+            pts[j][1] = static_cast<float>(base) + rawY + ey;
+            pts[j][2] = static_cast<float>(y) + rawZ + ez;
             float tu = kSlopeTex[slope][faces[face].texSet][j][0];
             const float tv = kSlopeTex[slope][faces[face].texSet][j][1];
             if (mirror) tu = 1.0f - tu;
