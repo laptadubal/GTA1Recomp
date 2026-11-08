@@ -4335,7 +4335,8 @@ void Game::damageCop(int index, int amount, AudioManager& audio) {
 void Game::applyWanted(int stars, const std::string& reason) {
     if (stars <= 0) return;
     const int before = wantedLevel_;
-    wantedLevel_ = std::clamp(wantedLevel_ + stars, 0, 5);
+    // The original wanted indicator shows up to four police-head icons.
+    wantedLevel_ = std::clamp(wantedLevel_ + stars, 0, 4);
     wantedDecay_ = 24.0f;
     wantedFlash_ = 1.0f;
     if (wantedLevel_ > before) {
@@ -6695,27 +6696,38 @@ void Game::drawHud(Renderer& renderer) {
                     true);
     }
 
-    // Wanted level stars under the cash counter.  The original HUD keeps the
-    // five-slot indicator visible at all times; lit slots mark the current
-    // level and blink briefly right after a level change.
+    // Wanted level under the cash counter: the original indicator repeats
+    // the little blue police-officer icon (end of the PED group, relative
+    // offsets +293/+294 — two bobbing 14x20 frames, byte-identical in all
+    // three city styles) once per level, up to four heads.  Unlit slots stay
+    // visible as darkened copies, and the lit ones blink briefly right after
+    // a level change.
     {
-        const float starSize = 13.0f * s;
-        const float gap = 5.0f * s;
-        const float totalW = starSize * 5.0f + gap * 4.0f;
-        float sx = sw - margin - totalW;
-        const float sy = margin + 28.0f * s;
-        for (int i = 0; i < 5; ++i) {
-            const bool lit = i < wantedLevel_;
-            const bool blink = lit && wantedFlash_ > 0.0f &&
-                               std::fmod(worldTime_ * 6.0f, 1.0f) > 0.5f;
-            drawRect(renderer, sx - 1.0f * s, sy - 1.0f * s,
-                     starSize + 2.0f * s, starSize + 2.0f * s, 0.0f, 0.0f,
-                     0.0f, 0.85f);
-            drawRect(renderer, sx, sy, starSize, starSize,
-                     lit ? 1.0f : 0.14f,
-                     lit ? (blink ? 0.45f : 0.82f) : 0.14f,
-                     lit ? 0.12f : 0.14f, 1.0f);
-            sx += starSize + gap;
+        const int pedBase = pedBaseIndex();
+        const auto& sprites = assets_.gry().sprites;
+        const int frameA = pedBase + 293;
+        const int frameB = pedBase + 294;
+        if (frameB < static_cast<int>(sprites.size())) {
+            const int f =
+                static_cast<int>(worldTime_ / 0.4f) % 2 == 0 ? 0 : 1;
+            const GLuint icon =
+                assets_.spriteTexture(f == 0 ? frameA : frameB);
+            const float ih = 26.0f * s;
+            const float iw = ih * 14.0f / 20.0f;
+            const float gap = 6.0f * s;
+            const float totalW = iw * 4.0f + gap * 3.0f;
+            float sx = sw - margin - totalW;
+            const float sy = margin + 26.0f * s;
+            for (int i = 0; i < 4; ++i) {
+                const bool lit = i < wantedLevel_;
+                const bool blink = lit && wantedFlash_ > 0.0f &&
+                                   std::fmod(worldTime_ * 6.0f, 1.0f) > 0.5f;
+                const float tint = lit ? (blink ? 0.55f : 1.0f) : 0.22f;
+                drawTexturedRect(renderer, icon, sx, sy, iw, ih, 0.0f, 0.0f,
+                                 1.0f, 1.0f, tint, tint,
+                                 lit ? tint : 0.25f, 1.0f);
+                sx += iw + gap;
+            }
         }
     }
 
