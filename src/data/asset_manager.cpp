@@ -673,17 +673,38 @@ bool AssetManager::lidHasAlpha(int index1Based) const {
     return slotHasAlpha_[static_cast<size_t>(slot)] != 0;
 }
 
-GLuint AssetManager::spriteTexture(int grySpriteIndex) {
-    if (grySpriteIndex < 0 ||
-        grySpriteIndex >= static_cast<int>(spriteCache_.size())) {
-        return 0;
-    }
-    CachedSprite& cached = spriteCache_[grySpriteIndex];
-    if (cached.texture) return cached.texture;
+namespace {
 
+// Decodes one GRY sprite (optionally through a remap table) and uploads it
+// as a NEAREST RGBA8 texture.  Returns 0 on failure.
+GLuint makeSpriteTexture(const GryFile& gry, int index, int remap,
+                         int& outW, int& outH) {
     std::vector<uint8_t> rgba;
     int w = 0, h = 0;
-    if (!gry_.spriteRGBA(grySpriteIndex, rgba, w, h)) return 0;
+    if (remap > 0 &&
+        gry.remapTables.size() >= (static_cast<size_t>(remap) + 1u) * 256u) {
+        // Remapped variant (pedestrian/character clothing): raw palette
+        // indices are mapped through the GRY remap table before expansion.
+        // Mirrors OpenGTA Graphics8Bit::getSpriteBitmap/applyRemap.
+        std::vector<uint8_t> pixels;
+        if (gry.spritePixels(index, pixels, w, h) && w > 0 && h > 0) {
+            const uint8_t* table =
+                gry.remapTables.data() + static_cast<size_t>(remap) * 256u;
+            for (size_t i = 0; i < pixels.size(); ++i)
+                pixels[i] = table[pixels[i]];
+            rgba.resize(pixels.size() * 4);
+            for (size_t i = 0; i < pixels.size(); ++i) {
+                const uint8_t idx = pixels[i];
+                const size_t o = i * 4;
+                rgba[o + 0] = gry.palette.rgb[idx * 3 + 0];
+                rgba[o + 1] = gry.palette.rgb[idx * 3 + 1];
+                rgba[o + 2] = gry.palette.rgb[idx * 3 + 2];
+                rgba[o + 3] = idx == 0 ? 0 : 255;
+            }
+        }
+    }
+    if (rgba.empty() && !gry.spriteRGBA(index, rgba, w, h)) return 0;
+    if (w <= 0 || h <= 0) return 0;
 
     GLuint id = 0;
     glGenTextures(1, &id);
@@ -696,9 +717,64 @@ GLuint AssetManager::spriteTexture(int grySpriteIndex) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glBindTexture(GL_TEXTURE_2D, 0);
-    cached.texture = id;
-    cached.w = w;
-    cached.h = h;
+    outW = w;
+    outH = h;
+    return id;
+}
+
+} // namespace
+
+GLuint AssetManager::spriteTexture(int grySpriteIndex, int remap) {
+    if (grySpriteIndex < 0 ||
+        grySpriteIndex >= static_cast<int>(spriteCache_.size())) {
+        return 0;
+    }
+
+    if (remap <= 0) {
+        // Fast path: the plain per-index cache used by cars, props, pickups.
+        CachedSprite& cached = spriteCache_[grySpriteIndex];
+        if (cached.texture) return cached.texture;
+        int w = 0, h = 0;
+        cached.texture = makeSpriteTexture(gry_, grySpriteIndex, 0, w, h);
+        cached.w = w;
+        cached.h = h;
+        return cached.texture;
+    }
+
+    // Remapped variant: recoloring the whole crowd can create many
+    // (index, remap) pairs, so those live in a bounded LRU cache.
+    const uint32_t key =
+        (static_cast<uint32_t>(grySpriteIndex) << 8) |
+        static_cast<uint32_t>(remap & 0xFF);
+    auto pos = spriteRemapLruIndex_.find(key);
+    if (pos != spriteRemapLruIndex_.end()) {
+        spriteRemapLru_.erase(pos->second);
+        spriteRemapLru_.push_front(key);
+        pos->second = spriteRemapLru_.begin();
+        return spriteRemapCache_[key].texture;
+    }
+
+    int w = 0, h = 0;
+    const GLuint id = makeSpriteTexture(gry_, grySpriteIndex, remap, w, h);
+    if (!id) return 0;
+
+    spriteRemapLru_.push_front(key);
+    spriteRemapLruIndex_[key] = spriteRemapLru_.begin();
+    while (spriteRemapLru_.size() > kMaxRemapSprites) {
+        const uint32_t victim = spriteRemapLru_.back();
+        spriteRemapLru_.pop_back();
+        spriteRemapLruIndex_.erase(victim);
+        auto victimEntry = spriteRemapCache_.find(victim);
+        if (victimEntry != spriteRemapCache_.end()) {
+            if (victimEntry->second.texture)
+                glDeleteTextures(1, &victimEntry->second.texture);
+            spriteRemapCache_.erase(victimEntry);
+        }
+    }
+    CachedSprite& entry = spriteRemapCache_[key];
+    entry.texture = id;
+    entry.w = w;
+    entry.h = h;
     return id;
 }
 
@@ -724,6 +800,13 @@ void AssetManager::destroy() {
         }
     }
     spriteCache_.clear();
+    for (auto& [key, entry] : spriteRemapCache_) {
+        (void)key;
+        if (entry.texture) glDeleteTextures(1, &entry.texture);
+    }
+    spriteRemapCache_.clear();
+    spriteRemapLru_.clear();
+    spriteRemapLruIndex_.clear();
     if (atlas_) {
         glDeleteTextures(1, &atlas_);
         atlas_ = 0;

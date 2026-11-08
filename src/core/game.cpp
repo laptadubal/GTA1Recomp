@@ -11,12 +11,24 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <sstream>
 #include <string>
 #include <vector>
 
 namespace gta {
 
 namespace {
+
+// The GRY archive stores pedestrian clothing colour variants as remap
+// tables 131..187 (OpenGTA: firstValidPedRemap=131, lastValidPedRemap=187).
+// Table N maps every palette index to its recoloured value; tables 0 and
+// >=188 are identity, tables 1..43 belong to vehicle recolouring.
+constexpr int kPedRemapFirst = 131;
+constexpr int kPedRemapLast = 187;
+// The eight selectable characters each own one clothing palette, chosen
+// from the GRY entries for maximum visible spread (olive, red, cyan, green,
+// yellow, blue, orange, grey).
+constexpr int kCharacterRemaps[8] = {131, 136, 140, 139, 165, 156, 143, 133};
 
 CityVertex makeVertex(const Vec3& p, float u, float v, float r, float g, float b,
                       float a) {
@@ -245,6 +257,7 @@ bool Game::loadCity(const std::string& city, std::string& error) {
     resetMission();
     menuCenter_ = Vec3{playerPosition().x, 1.0f, playerPosition().z};
     loadMusicPlaylist();
+    detectPedWindows();
     return true;
 }
 
@@ -474,7 +487,6 @@ void Game::resetCar() {
     footPos_ = spawn;
     footYaw_ = bestYaw;
     footAnimTime_ = 0.0f;
-    footFrame_ = 620;
 
     // Park the car a couple of cells down the road so the player starts on
     // foot, as in the original game.
@@ -1237,6 +1249,9 @@ void Game::beginMission() {
         missionPed_.alive = true;
         missionPed_.health = 100.0f;
         missionPed_.spriteIndex = sprite;
+        missionPed_.remap =
+            std::uniform_int_distribution<int>(kPedRemapFirst,
+                                               kPedRemapLast)(rng_);
         missionPed_.pos = missionSource_;
         missionPed_.yaw = roadYaw(missionSource_);
         const auto& info = assets_.gry().sprites[sprite];
@@ -1251,6 +1266,9 @@ void Game::beginMission() {
         missionPed_.active = true;
         missionPed_.alive = true;
         missionPed_.spriteIndex = sprite;
+        missionPed_.remap =
+            std::uniform_int_distribution<int>(kPedRemapFirst,
+                                               kPedRemapLast)(rng_);
         missionPed_.pos = missionSource_;
         missionPed_.yaw = roadYaw(missionSource_);
         const auto& info = assets_.gry().sprites[sprite];
@@ -2225,11 +2243,13 @@ void Game::updateOnFoot(float dt, InputManager& input, AudioManager& audio) {
 
     if (moving && std::abs(moveX) + std::abs(moveZ) > 0.01f) {
         footYaw_ = std::atan2(moveX, -moveZ);
-        footAnimTime_ += dt;
-        int direction =
-            static_cast<int>(std::lround(footYaw_ / (2.0f * kPi) * 8.0f));
-        direction = ((direction % 8) + 8) % 8;
-        footFrame_ = 620 + direction;
+        // Advance the 8-step walk cycle; the sprite itself is rotated by
+        // footYaw_, so the frame only encodes the stepping phase.
+        footAnimTime_ += dt * 4.5f;
+    } else {
+        // At rest ease back to the neutral (feet-together) step.
+        const float phase = std::fmodf(footAnimTime_, 8.0f);
+        footAnimTime_ -= phase * std::min(1.0f, dt * 6.0f);
     }
 
     bool phoneNear = false;
@@ -2259,31 +2279,41 @@ void Game::updateOnFoot(float dt, InputManager& input, AudioManager& audio) {
 
 void Game::drawPlayer(Renderer& renderer) {
     if (inCar_) return;
-    int base = 620;
+    // The walk cycle is the selected character's detected 8-frame window;
+    // armed poses use the weapon cycles at fixed PED-group offsets.  Both are
+    // recoloured with the character's clothing remap so the selected look
+    // survives drawing a weapon.
+    const int charRemap =
+        kCharacterRemaps[static_cast<size_t>(
+            (selectedCharacter_ >= 0 ? selectedCharacter_ : 0) % 8)];
+    int base = characterBaseFrame(selectedCharacter_);
     if (ammo_[static_cast<int>(weapon_)] > 0) {
+        const int pedBase = pedBaseIndex();
         switch (weapon_) {
         case WeaponType::Flamethrower:
-            base = 738;
+            base = pedBase + 118;
             break;
         case WeaponType::Rocket:
-            base = 774;
+            base = pedBase + 154;
             break;
         case WeaponType::Pistol:
         case WeaponType::Uzi:
         default:
-            base = 756;
+            base = pedBase + 136;
             break;
         }
     }
-    const int direction = ((footFrame_ - 620) % 8 + 8) % 8;
-    const int frame = base + direction;
+    const int step =
+        static_cast<int>(std::fmodf(footAnimTime_, 8.0f));
+    const int frame = base + step;
     const auto& sprites = assets_.gry().sprites;
     if (frame < 0 || frame >= static_cast<int>(sprites.size())) return;
     const int w = sprites[frame].w;
     const int h = sprites[frame].h;
     if (w <= 0 || h <= 0) return;
-    drawWorldSprite(renderer, assets_.spriteTexture(frame), footPos_, footYaw_,
-                    w / 64.0f * 1.7f, h / 64.0f * 1.7f, 0.03f);
+    drawWorldSprite(renderer, assets_.spriteTexture(frame, charRemap),
+                    footPos_, footYaw_, w / 64.0f * 1.7f, h / 64.0f * 1.7f,
+                    0.03f);
 }
 
 void Game::updatePlaying(float dt, InputManager& input, AudioManager& audio) {
@@ -2968,19 +2998,237 @@ int Game::randomCarSprite() {
     return -1;
 }
 
-int Game::randomPedSprite() {
+int Game::pedBaseIndex() const {
     const auto& gry = assets_.gry();
     int base = 0;
     for (int i = 0; i <= 6 && i < 21; ++i) base += gry.spriteNumbers[i];
-    std::uniform_int_distribution<int> pick(0, 24);
-    for (int attempt = 0; attempt < 16; ++attempt) {
-        const int sprite = base + pick(rng_);
-        if (sprite < static_cast<int>(gry.sprites.size()) &&
-            gry.sprites[sprite].w > 0) {
-            return sprite;
+    return base;
+}
+
+// Coarse colour key: hue(6) x saturation(3) x value(3); grays key separately
+// so "clothes tone" is comparable between sprites. Mirrors tools/find_chars.
+static uint32_t pedColorKey(uint8_t r, uint8_t g, uint8_t b) {
+    const float rf = r / 255.0f, gf = g / 255.0f, bf = b / 255.0f;
+    const float mx = std::max({rf, gf, bf});
+    const float mn = std::min({rf, gf, bf});
+    const float v = mx;
+    const float s = mx <= 0.0f ? 0.0f : (mx - mn) / mx;
+    // Keep in sync with tools/find_chars.py (gray sat < 0.25, dark v < 0.18,
+    // saturation and value quantized by int(x*2)).
+    if (s < 0.25f) return 0x100u | (static_cast<uint32_t>(v * 2.0f) & 3u);
+    if (v < 0.18f) return 0x200u;
+    // Hue exactly as colorsys.rgb_to_hsv: (rg-bg), (bg-rg) forms over delta.
+    const float delta = mx - mn;
+    const float rg = rf - gf, bg = bf - gf;
+    float h;
+    if (mx == rf) {
+        h = (rg - bg) / delta;
+    } else if (mx == gf) {
+        h = 2.0f + (bg - rg) / delta;
+    } else {
+        h = 4.0f + (rg - bg) / delta;
+    }
+    h = std::fmod(h / 6.0f, 1.0f);
+    if (h < 0.0f) h += 1.0f;
+    const uint32_t hb = static_cast<uint32_t>(h * 6.0f) % 6u;
+    const uint32_t sb = static_cast<uint32_t>(s * 2.0f) & 3u;
+    const uint32_t vb = static_cast<uint32_t>(v * 2.0f) & 3u;
+    return (hb << 4) | (sb << 2) | vb;
+}
+
+struct PedFrameStats {
+    int w = 0, h = 0, ink = 0;
+    uint32_t keys[5] = {0, 0, 0, 0, 0};
+    int counts[5] = {0, 0, 0, 0, 0};
+    bool valid = false;
+};
+
+void Game::detectPedWindows() {
+    pedWindows_.clear();
+    pedPool_.clear();
+    selectedCharacter_ = 0;
+    const auto& gry = assets_.gry();
+    const auto& sprites = gry.sprites;
+    const int pedBase = pedBaseIndex();
+    const int pedCount = gry.spriteNumbers[7];
+    copBaseIndex_ = pedBase + 191;
+    if (pedCount <= 8 ||
+        pedBase + pedCount > static_cast<int>(sprites.size())) {
+        return;
+    }
+
+    // Decode + classify every PED sprite once.
+    std::vector<PedFrameStats> stats(pedBase + pedCount);
+    std::vector<uint8_t> rgba;
+    int w = 0, h = 0;
+    for (int i = pedBase; i < pedBase + pedCount; ++i) {
+        if (!gry.spriteRGBA(i, rgba, w, h)) continue;
+        PedFrameStats& st = stats[static_cast<size_t>(i)];
+        st.w = w;
+        st.h = h;
+        uint32_t histKeys[64] = {};
+        int histCounts[64] = {};
+        int histCount = 0;
+        auto bump = [&](uint32_t k) {
+            for (int t = 0; t < histCount; ++t) {
+                if (histKeys[t] == k) {
+                    ++histCounts[t];
+                    return;
+                }
+            }
+            if (histCount < 64) {
+                histKeys[histCount] = k;
+                histCounts[histCount] = 1;
+                ++histCount;
+            }
+        };
+        for (size_t p = 0; p < rgba.size(); p += 4) {
+            if (rgba[p + 3] == 0) continue;
+            ++st.ink;
+            bump(pedColorKey(rgba[p], rgba[p + 1], rgba[p + 2]));
+        }
+        int top = 0;
+        for (int t = 0; t < histCount; ++t) {
+            if (top < 5 && (top < 4 || histCounts[t] > st.counts[top])) {
+                int slot = top;
+                for (int u = top + 1; u < 5; ++u) {
+                    if (histCounts[t] > st.counts[u]) { slot = u; break; }
+                }
+                st.keys[slot] = histKeys[t];
+                st.counts[slot] = histCounts[t];
+                if (top < 4) ++top;
+            }
+        }
+        st.valid = w >= 8 && w <= 26 && h >= 10 && h <= 30 &&
+                   st.ink >= 40 && st.ink <= 420;
+    }
+
+    // A window is a stable 8-frame walk cycle when all frames are humanoid
+    // of similar size and share a consistent clothing colour signature.
+    struct Window { int base = 0; float score = 0.0f; };
+    std::vector<Window> windows;
+    for (int s = pedBase; s + 8 <= pedBase + pedCount; ++s) {
+        int hmin = 999, hmax = 0, wmin = 999, wmax = 0;
+        bool ok = true;
+        for (int f = 0; f < 8; ++f) {
+            const PedFrameStats& st =
+                stats[static_cast<size_t>(s + f)];
+            if (!st.valid) { ok = false; break; }
+            hmin = std::min(hmin, st.h); hmax = std::max(hmax, st.h);
+            wmin = std::min(wmin, st.w); wmax = std::max(wmax, st.w);
+        }
+        if (!ok || hmax - hmin > 10 || wmax - wmin > 10) continue;
+
+        float simTotal = 0.0f;
+        int pairs = 0;
+        for (int a = 0; a < 8; ++a) {
+            for (int b = a + 1; b < 8; ++b) {
+                const PedFrameStats& sa = stats[static_cast<size_t>(s + a)];
+                const PedFrameStats& sb = stats[static_cast<size_t>(s + b)];
+                uint32_t keys[10] = {};
+                int nk = 0;
+                auto addKey = [&](uint32_t k) {
+                    if (k == 0) return;
+                    for (int t = 0; t < nk; ++t) {
+                        if (keys[t] == k) return;
+                    }
+                    keys[nk] = k;
+                    ++nk;
+                };
+                for (int t = 0; t < 5; ++t) {
+                    addKey(sa.keys[t]);
+                    addKey(sb.keys[t]);
+                }
+                int common = 0, tot = 0;
+                for (int t = 0; t < 5; ++t) {
+                    tot += sa.counts[t];
+                    tot += sb.counts[t];
+                }
+                for (int k = 0; k < nk; ++k) {
+                    int ca = 0, cb = 0;
+                    for (int t = 0; t < 5; ++t) {
+                        if (sa.keys[t] == keys[k]) ca = sa.counts[t];
+                        if (sb.keys[t] == keys[k]) cb = sb.counts[t];
+                    }
+                    common += std::min(ca, cb);
+                }
+                simTotal += tot > 0 ?
+                    2.0f * static_cast<float>(common) / static_cast<float>(tot) : 0.0f;
+                ++pairs;
+            }
+        }
+        const float score = simTotal / static_cast<float>(pairs);
+        if (score >= 0.7f) {
+            windows.push_back(Window{s, score});
         }
     }
-    return -1;
+    std::sort(windows.begin(), windows.end(),
+              [](const Window& a, const Window& b) {
+                  if (a.score != b.score) return a.score > b.score;
+                  return a.base < b.base;
+              });
+    for (const Window& wnd : windows) {
+        bool overlaps = false;
+        for (int kept : pedWindows_) {
+            if (wnd.base + 8 > kept && wnd.base < kept + 8) {
+                overlaps = true;
+                break;
+            }
+        }
+        if (!overlaps) pedWindows_.push_back(wnd.base);
+    }
+    std::sort(pedWindows_.begin(), pedWindows_.end());
+
+    // Everything from offset +118 onward inside the PED group is special:
+    // the armed walk cycles (flame +118, gun +136, rocket +154) and the blue
+    // cop/special poses further up.  Regular pedestrians (and the player's
+    // selectable characters) use only the plain walk cycles below that line.
+    const int weaponZoneStart = pedBase + 118;
+    for (int base : pedWindows_) {
+        if (base < weaponZoneStart) pedPool_.push_back(base);
+    }
+    if (pedPool_.empty()) pedPool_ = pedWindows_;
+    {
+        std::ostringstream list;
+        list << "[gry] city=" << assets_.cityName() << " windows=[";
+        for (size_t i = 0; i < pedWindows_.size(); ++i) {
+            if (i) list << ",";
+            list << pedWindows_[i];
+        }
+        list << "] pool=" << pedPool_.size()
+             << " copBase=" << copBaseIndex_;
+        std::fprintf(stderr, "%s\n", list.str().c_str());
+    }
+
+    // Upload the ped/weapon/cop cycle textures once, up front.
+    for (int base : pedWindows_) {
+        for (int f = 0; f < 8; ++f) {
+            assets_.spriteTexture(base + f);
+        }
+    }
+    for (int f = 0; f < 8; ++f) {
+        assets_.spriteTexture(copBaseIndex_ + f);
+    }
+    for (int off : {118, 136, 154}) {
+        for (int f = 0; f < 8; ++f) {
+            assets_.spriteTexture(pedBaseIndex() + off + f);
+        }
+    }
+}
+
+int Game::characterBaseFrame(int character) const {
+    if (pedWindows_.empty()) return 620; // safe legacy fallback (NYC layout)
+    const int n = static_cast<int>(pedWindows_.size());
+    return pedWindows_[static_cast<size_t>(
+        character >= 0 && character < n ? character : 0)];
+}
+
+int Game::randomPedSprite() {
+    if (!pedPool_.empty()) {
+        return pedPool_[std::uniform_int_distribution<size_t>(
+            0, pedPool_.size() - 1)(rng_)];
+    }
+    return characterBaseFrame(0);
 }
 
 void Game::spawnTraffic() {
@@ -3306,6 +3554,13 @@ void Game::spawnPeds() {
         ped.cellX = x;
         ped.cellY = y;
         ped.spriteIndex = sprite;
+        ped.baseFrame = sprite;
+        ped.animTime = 0.0f;
+        {
+            std::uniform_int_distribution<int> remap(
+                kPedRemapFirst, kPedRemapLast);
+            ped.remap = remap(rng_);
+        }
         ped.width = widthPixels / 64.0f * 1.15f;
         ped.height = heightPixels / 64.0f * 1.15f;
         std::uniform_int_distribution<int> pick(0, 3);
@@ -3376,6 +3631,9 @@ void Game::updatePeds(float dt) {
             ped.dead = false;
             ped.deadTimer = 0.0f;
             ped.panicTimer = 0.0f;
+            std::uniform_int_distribution<int> remap(
+                kPedRemapFirst, kPedRemapLast);
+            ped.remap = remap(rng_);
             chooseDirection(ped);
             return;
         }
@@ -3437,6 +3695,8 @@ void Game::updatePeds(float dt) {
         }
         ped.yaw = std::atan2(static_cast<float>(ped.dirX),
                              -static_cast<float>(ped.dirY));
+        // Pedestrians step through their character's 8-frame cycle.
+        ped.animTime += dt * (ped.panicTimer > 0.0f ? 7.5f : 4.5f);
     }
 }
 
@@ -3514,18 +3774,25 @@ void Game::drawProps(Renderer& renderer) {
 }
 
 void Game::drawPeds(Renderer& renderer) {
+    const auto& sprites = assets_.gry().sprites;
     for (const Pedestrian& ped : pedestrians_) {
+        const int frame =
+            ped.baseFrame + static_cast<int>(std::fmodf(ped.animTime, 8.0f));
+        if (frame < 0 || frame >= static_cast<int>(sprites.size()) ||
+            sprites[frame].w <= 0 || sprites[frame].h <= 0) {
+            continue;
+        }
         if (ped.dead) {
-            drawWorldSprite(renderer, assets_.spriteTexture(ped.spriteIndex),
+            drawWorldSprite(renderer, assets_.spriteTexture(frame, ped.remap),
                             ped.pos, ped.yaw + kPi * 0.5f, ped.width,
                             ped.height * 0.55f, 0.012f, 0.55f, 0.16f, 0.16f,
                             1.0f);
             continue;
         }
         const float tint = ped.panicTimer > 0.0f ? 1.0f : 0.92f;
-        drawWorldSprite(renderer, assets_.spriteTexture(ped.spriteIndex), ped.pos,
-                        ped.yaw, ped.width, ped.height, 0.015f, tint, tint,
-                        tint * 0.95f, 1.0f);
+        drawWorldSprite(renderer, assets_.spriteTexture(frame, ped.remap),
+                        ped.pos, ped.yaw, ped.width, ped.height, 0.015f, tint,
+                        tint, tint * 0.95f, 1.0f);
     }
 }
 
@@ -4673,10 +4940,10 @@ void Game::updatePolice(float dt, AudioManager& audio) {
             if (!world_.isDrivable(cop.pos.x, cop.pos.z)) cop.pos = car.pos;
             cop.active = true;
             cop.health = 55.0f;
-            cop.spriteIndex = 811;
+            cop.spriteIndex = copBaseIndex_;
             cop.fireCooldown = 0.7f;
             cops_.push_back(cop);
-            assets_.spriteTexture(811);
+            assets_.spriteTexture(copBaseIndex_);
             car.spawnCopTimer = 8.0f;
         }
     }
@@ -4700,7 +4967,9 @@ void Game::updatePolice(float dt, AudioManager& audio) {
         while (difference > kPi) difference -= 2.0f * kPi;
         while (difference < -kPi) difference += 2.0f * kPi;
         cop.yaw += std::clamp(difference, -3.0f * dt, 3.0f * dt);
-        cop.animTime += dt;
+        // Cop step cycle: the sprite is rotated by yaw, the frame encodes
+        // the stepping phase (same scheme as the player on foot).
+        cop.animTime += dt * 4.5f;
 
         if (distance > 1.1f) {
             const Vec3 next{cop.pos.x + std::sin(cop.yaw) * 2.6f * dt,
@@ -4720,9 +4989,8 @@ void Game::updatePolice(float dt, AudioManager& audio) {
             if (surface > 0) cop.pos.y = static_cast<float>(surface);
         }
 
-        int direction = static_cast<int>(std::lround(cop.yaw / (2.0f * kPi) * 8.0f));
-        direction = ((direction % 8) + 8) % 8;
-        cop.spriteIndex = 811 + direction;
+        cop.spriteIndex =
+            copBaseIndex_ + static_cast<int>(std::fmodf(cop.animTime, 8.0f));
 
         cop.fireCooldown -= dt;
         if (!inCar_ && distance < 14.0f && cop.fireCooldown <= 0.0f) {
@@ -5057,7 +5325,8 @@ void Game::drawMissionTargets(Renderer& renderer) {
             b = 0.55f;
         }
         drawWorldSprite(renderer,
-                        assets_.spriteTexture(missionPed_.spriteIndex),
+                        assets_.spriteTexture(missionPed_.spriteIndex,
+                                              missionPed_.remap),
                         missionPed_.pos, missionPed_.yaw, missionPed_.width,
                         missionPed_.height, 0.035f, r, g, b, 1.0f);
     }

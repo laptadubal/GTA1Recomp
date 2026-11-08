@@ -99,6 +99,7 @@ private:
         Vec3 pos{};
         float yaw = 0.0f;
         int spriteIndex = 0;
+        int remap = 0;
         float width = 0.35f;
         float height = 0.5f;
         bool alive = true;
@@ -157,6 +158,12 @@ private:
         bool dead = false;
         float deadTimer = 0.0f;
         float panicTimer = 0.0f;
+        // 8-frame character window: the walk cycle is baseFrame..baseFrame+7
+        // and animTime counts steps inside that cycle.
+        int baseFrame = 0;
+        float animTime = 0.0f;
+        // GRY clothing remap table (131..187) — the pedestrian's colour.
+        int remap = 0;
     };
 
     struct Projectile {
@@ -212,7 +219,7 @@ private:
     struct Cop {
         Vec3 pos{};
         float yaw = 0.0f;
-        int spriteIndex = 811;
+        int spriteIndex = 0;
         float health = 55.0f;
         float fireCooldown = 1.2f;
         float animTime = 0.0f;
@@ -252,6 +259,11 @@ private:
     void drawProps(Renderer& renderer);
     int randomCarSprite();
     int randomPedSprite();
+    // Discover the 8-frame character walk cycles inside the PED sprite group
+    // (data-driven, so all three city GRY files resolve to the right bases).
+    void detectPedWindows();
+    int pedBaseIndex() const;
+    int characterBaseFrame(int character) const;
 
     // Weapons, damage, police and effects.
     void updateCombat(float dt, InputManager& input, AudioManager& audio);
@@ -441,7 +453,14 @@ private:
     Vec3 footPos_;
     float footYaw_ = 0.0f;
     float footAnimTime_ = 0.0f;
-    int footFrame_ = 620;
+    // Detected 8-frame character walk cycles (absolute sprite indices).
+    std::vector<int> pedWindows_;
+    // Windows offered for random pedestrians (weapon/cop poses excluded).
+    std::vector<int> pedPool_;
+    // 8-frame cop cycle base (fixed offset inside the PED group).
+    int copBaseIndex_ = 0;
+    // Character chosen on the selection screen; indexes pedWindows_.
+    int selectedCharacter_ = 0;
     bool demo_ = false;
     bool wasCrashing_ = false;
     float demoTime_ = 0.0f;

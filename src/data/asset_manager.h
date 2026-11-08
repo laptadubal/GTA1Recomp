@@ -1,7 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <list>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "data/formats.h"
@@ -72,7 +74,10 @@ public:
     int grassFallbackLid() const { return grassFallbackLid_; }
 
     // Sprite texture cache (RGBA, alpha = 0 for palette index 0).
-    GLuint spriteTexture(int grySpriteIndex);
+    // pass remap != 0 to get a variant recoloured through the GRY remap
+    // tables (pedestrian/character clothing variants); those are kept in a
+    // bounded LRU cache separate from the main per-index cache.
+    GLuint spriteTexture(int grySpriteIndex, int remap = 0);
     int spriteWidth(int grySpriteIndex) const;
     int spriteHeight(int grySpriteIndex) const;
 
@@ -134,6 +139,14 @@ private:
         int h = 0;
     };
     std::vector<CachedSprite> spriteCache_;
+
+    // LRU cache for remapped sprite variants, keyed by (index, remap).
+    // Sized to hold the full crowd's working set (~70 peds x 8 frames)
+    // without frame-to-frame evictions.
+    static constexpr uint32_t kMaxRemapSprites = 2048;
+    std::unordered_map<uint32_t, CachedSprite> spriteRemapCache_;
+    std::list<uint32_t> spriteRemapLru_;
+    std::unordered_map<uint32_t, std::list<uint32_t>::iterator> spriteRemapLruIndex_;
 };
 
 } // namespace gta

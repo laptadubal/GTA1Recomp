@@ -240,6 +240,11 @@ struct GryFile {
 
     // Converts a sprite (base frame) to RGBA8.
     bool spriteRGBA(int index, std::vector<uint8_t>& rgba, int& w, int& h) const;
+    // Raw palette indices (no palette expansion), needed for remapped
+    // sprite variants (pedestrian/character clothing variants live in the
+    // GRY remap tables).
+    bool spritePixels(int index, std::vector<uint8_t>& pixels, int& w,
+                      int& h) const;
 
     // Absolute sprite index for a car model's sprite number.
     int carSpriteIndex(int carSpriteNum) const {

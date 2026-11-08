@@ -460,7 +460,8 @@ bool GryFile::tileData(int slot, uint8_t* dst) const {
     return true;
 }
 
-bool GryFile::spriteRGBA(int index, std::vector<uint8_t>& rgba, int& w, int& h) const {
+bool GryFile::spritePixels(int index, std::vector<uint8_t>& pixels, int& w,
+                           int& h) const {
     if (index < 0 || index >= static_cast<int>(sprites.size())) return false;
     const GrySpriteInfo& s = sprites[index];
     if (s.w == 0 || s.h == 0) return false;
@@ -471,20 +472,32 @@ bool GryFile::spriteRGBA(int index, std::vector<uint8_t>& rgba, int& w, int& h) 
 
     w = s.w;
     h = s.h;
-    rgba.assign(static_cast<size_t>(w) * h * 4, 0);
+    pixels.assign(static_cast<size_t>(w) * h, 0);
     for (int y = 0; y < h; ++y) {
         const int sy = s.yoffset + y;
         if (sy < 0 || sy >= 256) continue;
         for (int x = 0; x < w; ++x) {
             const int sx = s.xoffset + x;
             if (sx < 0 || sx >= 256) continue;
-            const uint8_t idx = spriteGraphics[base + static_cast<size_t>(sy) * 256 + sx];
-            const size_t o = (static_cast<size_t>(y) * w + x) * 4;
-            rgba[o + 0] = palette.rgb[idx * 3 + 0];
-            rgba[o + 1] = palette.rgb[idx * 3 + 1];
-            rgba[o + 2] = palette.rgb[idx * 3 + 2];
-            rgba[o + 3] = idx == 0 ? 0 : 255;
+            pixels[static_cast<size_t>(y) * w + x] =
+                spriteGraphics[base + static_cast<size_t>(sy) * 256 + sx];
         }
+    }
+    return true;
+}
+
+bool GryFile::spriteRGBA(int index, std::vector<uint8_t>& rgba, int& w, int& h) const {
+    std::vector<uint8_t> pixels;
+    if (!spritePixels(index, pixels, w, h)) return false;
+
+    rgba.assign(static_cast<size_t>(w) * h * 4, 0);
+    for (size_t i = 0; i < pixels.size(); ++i) {
+        const uint8_t idx = pixels[i];
+        const size_t o = i * 4;
+        rgba[o + 0] = palette.rgb[idx * 3 + 0];
+        rgba[o + 1] = palette.rgb[idx * 3 + 1];
+        rgba[o + 2] = palette.rgb[idx * 3 + 2];
+        rgba[o + 3] = idx == 0 ? 0 : 255;
     }
     return true;
 }
