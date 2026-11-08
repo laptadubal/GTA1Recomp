@@ -355,7 +355,9 @@ void Game::loadOriginalMenuAssets() {
             (base / (name + ".ACT")).string(), 640, 480, false);
     }
     dmaLogo_ = loadRawTexture((base / "F_DMA.RAW").string(), 78, 109);
-    bmgLogo_ = loadRawTexture((base / "F_BMG.RAW").string(), 50, 100);
+    // F_BMG.RAW is a 100x50 landscape RGB image (verified by decoding:
+    // red triangle, "BMG" lettering, underline bar, "INTERACTIVE" caption).
+    bmgLogo_ = loadRawTexture((base / "F_BMG.RAW").string(), 100, 50);
     std::string ignored;
     menuFont_.load((base / "BIG1.FON").string(), ignored);
     bigFont_.load((base / "BIG2.FON").string(), ignored);
@@ -5338,9 +5340,9 @@ void Game::renderIntro(Renderer& renderer) {
                            std::min(1.0f, (2.2f - local) / 0.45f)));
         const GLuint logo = dma ? dmaLogo_ : bmgLogo_;
         if (logo) {
-            const float logoHeight = h * (dma ? 0.56f : 0.42f);
+            const float logoHeight = h * (dma ? 0.56f : 0.24f);
             const float logoWidth =
-                logoHeight * (dma ? (78.0f / 109.0f) : (50.0f / 100.0f));
+                logoHeight * (dma ? (78.0f / 109.0f) : (100.0f / 50.0f));
             drawTexturedRect(renderer, logo, (w - logoWidth) * 0.5f,
                              (h - logoHeight) * 0.5f, logoWidth, logoHeight,
                              0, 0, 1, 1, 1.0f, 1.0f, 1.0f, fade);
