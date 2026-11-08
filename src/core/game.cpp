@@ -173,6 +173,12 @@ void Game::shutdown() {
             texture = 0;
         }
     }
+    for (GLuint& texture : portraitTextures_) {
+        if (texture) {
+            glDeleteTextures(1, &texture);
+            texture = 0;
+        }
+    }
     if (dmaLogo_) {
         glDeleteTextures(1, &dmaLogo_);
         dmaLogo_ = 0;
@@ -371,6 +377,16 @@ void Game::loadOriginalMenuAssets() {
     // F_BMG.RAW is a 100x50 landscape RGB image (verified by decoding:
     // red triangle, "BMG" lettering, underline bar, "INTERACTIVE" caption).
     bmgLogo_ = loadRawTexture((base / "F_BMG.RAW").string(), 100, 50);
+    // F_PLAY1..8.RAT: 102x141 indexed character portraits, palette F_PAL.RAW
+    // (plain 256xRGB).  Portrait N belongs to character N (ordered best-
+    // effort; the original pairing is confirmed by the user visually).
+    for (int i = 0; i < kCharacterCount; ++i) {
+        const std::string name =
+            "F_PLAY" + std::to_string(i + 1) + ".RAT";
+        portraitTextures_[i] = loadIndexedTexture(
+            (base / name).string(), (base / "F_PAL.RAW").string(), 102, 141,
+            false);
+    }
     std::string ignored;
     menuFont_.load((base / "BIG1.FON").string(), ignored);
     bigFont_.load((base / "BIG2.FON").string(), ignored);
@@ -1724,6 +1740,10 @@ bool Game::showScreen(const std::string& name) {
         screen_ = Screen::MainMenu;
         return true;
     }
+    if (name == "character") {
+        screen_ = Screen::CharacterSelect;
+        return true;
+    }
     if (name == "cutscene") {
         if (selectedCity_ != assets_.cityName()) {
             std::string error;
@@ -1817,6 +1837,11 @@ void Game::update(float dt, InputManager& input, AudioManager& audio) {
     case Screen::MainMenu:
         updateMenuCamera(dt);
         updateMainMenu(dt, input, audio);
+        audio.setPaused(true);
+        break;
+    case Screen::CharacterSelect:
+        updateMenuCamera(dt);
+        updateCharacterSelect(dt, input, audio);
         audio.setPaused(true);
         break;
     case Screen::Settings:
@@ -2041,7 +2066,8 @@ void Game::updateMainMenu(float dt, InputManager& input, AudioManager& audio) {
         continueCampaign();
     } else if (label == "PLAY" || label == "NEW GAME") {
         config_.save.valid = false;
-        startSelectedGame();
+        // Pick one of the eight portraits before the city cutscene.
+        screen_ = Screen::CharacterSelect;
     } else if (label == "CITY") {
         static const char* cities[] = {"NYC", "MIAMI", "SANB"};
         auto current = std::find(std::begin(cities), std::end(cities), selectedCity_);
@@ -2058,6 +2084,55 @@ void Game::updateMainMenu(float dt, InputManager& input, AudioManager& audio) {
         screen_ = Screen::Controls;
     } else if (label == "QUIT") {
         quit_ = true;
+    }
+}
+
+void Game::updateCharacterSelect(float dt, InputManager& input,
+                                 AudioManager& audio) {
+    (void)dt;
+    if (!menuMusicStarted_ && !musicTracks_.empty()) {
+        playMusicTrack(0, audio);
+        menuMusicStarted_ = true;
+    }
+    if (input.pressed(GameAction::MenuLeft)) {
+        selectedCharacter_ = (selectedCharacter_ + kCharacterCount - 1) %
+                             kCharacterCount;
+        audio.playUiClick();
+    }
+    if (input.pressed(GameAction::MenuRight)) {
+        selectedCharacter_ = (selectedCharacter_ + 1) % kCharacterCount;
+        audio.playUiClick();
+    }
+    if (input.pressed(GameAction::MenuUp)) {
+        selectedCharacter_ = (selectedCharacter_ + kCharacterCount - 1) %
+                             kCharacterCount;
+    }
+    if (input.pressed(GameAction::MenuDown)) {
+        selectedCharacter_ = (selectedCharacter_ + 1) % kCharacterCount;
+    }
+    if (input.pressed(GameAction::MenuBack)) {
+        audio.playUiClick();
+        screen_ = Screen::MainMenu;
+        return;
+    }
+    if (input.pressed(GameAction::MenuSelect)) {
+        audio.playUiClick();
+        startSelectedGame();
+        return;
+    }
+    // Mouse: hovering a portrait selects it, clicking selects or confirms.
+    if (input.mousePressed()) {
+        const float wx = input.mouseX() *
+                         static_cast<float>(renderer_->width()) /
+                         std::max(1, renderer_->windowWidth());
+        const float wy = input.mouseY() *
+                         static_cast<float>(renderer_->height()) /
+                         std::max(1, renderer_->windowHeight());
+        const int hit = characterPortraitHitTest(wx, wy);
+        if (hit >= 0) {
+            selectedCharacter_ = hit;
+            audio.playUiClick();
+        }
     }
 }
 
@@ -2776,6 +2851,10 @@ void Game::render(Renderer& renderer) {
         renderWorldScene(renderer, false, false);
         renderMainMenu(renderer);
         break;
+    case Screen::CharacterSelect:
+        renderWorldScene(renderer, false, false);
+        renderCharacterSelect(renderer);
+        break;
     case Screen::Settings:
         renderWorldScene(renderer, false, false);
         renderSettings(renderer, false);
@@ -3046,7 +3125,10 @@ struct PedFrameStats {
 void Game::detectPedWindows() {
     pedWindows_.clear();
     pedPool_.clear();
-    selectedCharacter_ = 0;
+    // Keep the chosen character across city reloads (window layout differs,
+    // but the choice is an index and stays valid).
+    if (selectedCharacter_ < 0 || selectedCharacter_ >= kCharacterCount)
+        selectedCharacter_ = 0;
     const auto& gry = assets_.gry();
     const auto& sprites = gry.sprites;
     const int pedBase = pedBaseIndex();
@@ -5838,6 +5920,91 @@ void Game::renderMainMenu(Renderer& renderer) {
         drawText(renderer, statusMessage_, w * 0.5f, h - 76.0f * s, 1.0f * s,
                  1.0f, 0.7f, 0.25f, 0.95f, true);
     }
+}
+
+void Game::characterPortraitRect(int index, float& x, float& y, float& w,
+                                 float& h) const {
+    const float W =
+        renderer_ ? static_cast<float>(renderer_->width()) : 1280.0f;
+    const float H =
+        renderer_ ? static_cast<float>(renderer_->height()) : 720.0f;
+    // Sized so all eight portraits fit in ~90% of the window width.
+    h = H * 0.20f;
+    w = h * (102.0f / 141.0f);
+    const float gap = w * 0.30f;
+    const float totalW = kCharacterCount * w + (kCharacterCount - 1) * gap;
+    x = (W - totalW) * 0.5f + static_cast<float>(index) * (w + gap);
+    y = H * 0.27f;
+}
+
+int Game::characterPortraitHitTest(float x, float y) const {
+    for (int i = 0; i < kCharacterCount; ++i) {
+        float rx = 0, ry = 0, rw = 0, rh = 0;
+        characterPortraitRect(i, rx, ry, rw, rh);
+        if (x >= rx - 6.0f && x <= rx + rw + 6.0f && y >= ry - 6.0f &&
+            y <= ry + rh + 6.0f) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+void Game::renderCharacterSelect(Renderer& renderer) {
+    const float w = static_cast<float>(renderer.width());
+    const float h = static_cast<float>(renderer.height());
+    const float s = uiScale();
+
+    if (originalAssets_ && menuUpper_) {
+        drawOriginalBackdrop(renderer, true);
+    } else {
+        drawRect(renderer, 0, 0, w, h, 0.04f, 0.05f, 0.07f, 1.0f);
+    }
+
+    // Dark band keeps the gold title and the portrait row legible.
+    drawRect(renderer, 0, h * 0.13f, w, h * 0.62f, 0.0f, 0.0f, 0.0f, 0.35f);
+
+    if (originalAssets_ && bigFont_.valid()) {
+        drawOriginalText(renderer, menuFrame(), "CHOOSE YOUR CHARACTER",
+                         320.0f, 92.0f, 1.0f, 1.0f, 0.85f, 0.3f, 1.0f, true);
+    } else {
+        drawText(renderer, "CHOOSE YOUR CHARACTER", w * 0.5f, h * 0.16f,
+                 1.4f * s, 1.0f, 0.85f, 0.3f, 1.0f, true);
+    }
+
+    for (int i = 0; i < kCharacterCount; ++i) {
+        float rx = 0, ry = 0, rw = 0, rh = 0;
+        characterPortraitRect(i, rx, ry, rw, rh);
+        const bool selected = (i == selectedCharacter_);
+        if (selected) {
+            drawRect(renderer, rx - 7.0f, ry - 7.0f, rw + 14.0f, rh + 14.0f,
+                     1.0f, 0.82f, 0.22f, 1.0f);
+        } else {
+            drawRect(renderer, rx - 4.0f, ry - 4.0f, rw + 8.0f, rh + 8.0f,
+                     0.05f, 0.06f, 0.08f, 0.85f);
+        }
+        if (portraitTextures_[i]) {
+            const float zoom = selected ? 1.06f : 1.0f;
+            const float dw = rw * zoom, dh = rh * zoom;
+            const float dx = rx + (rw - dw) * 0.5f;
+            const float dy = ry + (rh - dh) * 0.5f;
+            const float dim = selected ? 1.0f : 0.62f;
+            drawTexturedRect(renderer, portraitTextures_[i], dx, dy, dw, dh,
+                             0.0f, 0.0f, 1.0f, 1.0f, dim, dim, dim, 1.0f);
+        } else {
+            drawText(renderer, std::to_string(i + 1), rx + rw * 0.5f,
+                     ry + rh * 0.5f, 2.0f * s, 0.3f, 0.32f, 0.36f, 0.8f, true);
+        }
+        char label[24];
+        std::snprintf(label, sizeof(label), "CHARACTER %d", i + 1);
+        drawText(renderer, std::string(label), rx + rw * 0.5f,
+                 ry + rh + 16.0f * s, 0.95f * s, selected ? 1.0f : 0.55f,
+                 selected ? 0.92f : 0.55f, selected ? 0.6f : 0.58f,
+                 selected ? 1.0f : 0.85f, true);
+    }
+
+    drawText(renderer, "LEFT / RIGHT  CHOOSE      ENTER / A  CONFIRM      ESC  BACK",
+             w * 0.5f, h - 34.0f * s, 1.0f * s, 0.72f, 0.78f, 0.88f, 0.9f,
+             true);
 }
 
 void Game::renderSettings(Renderer& renderer, bool fromPause) {

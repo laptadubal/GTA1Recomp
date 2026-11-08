@@ -55,6 +55,7 @@ private:
         Intro,
         Cutscene,
         MainMenu,
+        CharacterSelect,
         Settings,
         Controls,
         Playing,
@@ -348,6 +349,8 @@ private:
     void startCutscene(int index);
     int cutsceneForCity() const;
     void updateMainMenu(float dt, InputManager& input, AudioManager& audio);
+    void updateCharacterSelect(float dt, InputManager& input,
+                               AudioManager& audio);
     void updateSettings(float dt, InputManager& input, AudioManager& audio,
                         bool fromPause);
     void updateControls(InputManager& input, AudioManager& audio);
@@ -382,6 +385,11 @@ private:
     void renderIntro(Renderer& renderer);
     void renderCutscene(Renderer& renderer);
     void renderMainMenu(Renderer& renderer);
+    void renderCharacterSelect(Renderer& renderer);
+    // Screen rect of character N's portrait on the selection screen.
+    void characterPortraitRect(int index, float& x, float& y, float& w,
+                               float& h) const;
+    int characterPortraitHitTest(float x, float y) const;
     void renderSettings(Renderer& renderer, bool fromPause);
     void renderControls(Renderer& renderer);
     void renderCityMap(Renderer& renderer);
@@ -437,6 +445,7 @@ private:
     GLuint menuLower_ = 0;
     GLuint logoTextures_[8] = {};
     GLuint cutsceneTextures_[6] = {};
+    GLuint portraitTextures_[8] = {};
     GLuint dmaLogo_ = 0;
     GLuint bmgLogo_ = 0;
     std::unordered_map<std::string, std::string> fxt_;
@@ -461,6 +470,7 @@ private:
     int copBaseIndex_ = 0;
     // Character chosen on the selection screen; indexes pedWindows_.
     int selectedCharacter_ = 0;
+    static constexpr int kCharacterCount = 8;
     bool demo_ = false;
     bool wasCrashing_ = false;
     float demoTime_ = 0.0f;
