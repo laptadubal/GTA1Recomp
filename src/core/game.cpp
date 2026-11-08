@@ -40,6 +40,19 @@ constexpr int kSpurtFirst = 245;   // 8 frames
 constexpr int kBloodPoolFrames[5] = {245, 247, 248, 250, 252};
 constexpr int kDeadCopOffset = 237; // fallen cop with blood (copBase+46)
 
+// Fire / explosion sprite animation (GRY WCAR + EX groups, resolved per city
+// from the sprite-number counts so the indexes shift correctly between
+// styles).  A detonation plays the 48-frame ground burst: the engine overlays
+// four frames 12 apart in a flat 2x2 grid and advances the base 12 positions
+// (7 fps), after which the burst is over.  A burning wreck loops the 7-frame
+// WCAR fire at the same 7 fps.
+constexpr float kFireFrameRate = 7.0f;
+constexpr int kExplosionGroup = 48;   // frames per detonation group
+constexpr int kExplosionAdvance = 12; // base positions the grid cycles
+constexpr int kFireFrames = 7;
+constexpr int kMaxExplosions = 12;
+constexpr int kMaxBurningCars = 16;
+
 CityVertex makeVertex(const Vec3& p, float u, float v, float r, float g, float b,
                       float a) {
     CityVertex vertex{};
@@ -269,6 +282,9 @@ bool Game::loadCity(const std::string& city, std::string& error) {
     lastCity_ = assets_.cityName();
     selectedCity_ = lastCity_;
     config_.city = lastCity_;
+    explosions_.clear();
+    burningCars_.clear();
+    carIsWrecked_ = false;
     resetCar();
     resetMission();
     menuCenter_ = Vec3{playerPosition().x, 1.0f, playerPosition().z};
@@ -530,6 +546,7 @@ void Game::resetCar() {
     vehicle_.setYaw(bestYaw);
     carHealth_ = carHealthMax_;
     carSmokeTimer_ = 0.0f;
+    carIsWrecked_ = false;
     lastCarSpeed_ = 0.0f;
     camera_.snapTo(footPos_);
 }
@@ -1318,6 +1335,7 @@ void Game::takeMissionCar() {
     carLabel_ = carNameForSprite(spriteIndex_);
     footPos_ = missionCar_.pos;
     inCar_ = true;
+    carIsWrecked_ = false;
     missionCar_.active = false;
     missionCarTaken_ = true;
     missionPhase_ = MissionPhase::Deliver;
@@ -2433,6 +2451,8 @@ void Game::updatePlaying(float dt, InputManager& input, AudioManager& audio) {
         hurtFlash_ = std::max(0.0f, hurtFlash_ - dt);
         updateParticles(dt);
         updateBlood(dt);
+        updateExplosions(dt);
+        updateBurningCars(dt);
         if (wastedTimer_ <= 0.0f) {
             respawnPlayer(audio);
         }
@@ -2445,6 +2465,8 @@ void Game::updatePlaying(float dt, InputManager& input, AudioManager& audio) {
         deathFade_ = std::min(1.0f, deathFade_ + dt * 1.6f);
         updateParticles(dt);
         updateBlood(dt);
+        updateExplosions(dt);
+        updateBurningCars(dt);
         if (bustedTimer_ <= 0.0f) {
             respawnPlayer(audio);
         }
@@ -2945,6 +2967,8 @@ void Game::renderWorldScene(Renderer& renderer, bool withCar, bool withPickups) 
         drawCar(renderer);
         drawProjectiles(renderer);
         drawParticles(renderer);
+        drawBurningCars(renderer);
+        drawExplosions(renderer);
     }
 }
 
@@ -3089,6 +3113,10 @@ void Game::drawWorldSprite(Renderer& renderer, GLuint texture, const Vec3& pos,
 }
 
 void Game::drawCar(Renderer& renderer) {
+    if (carIsWrecked_) {
+        // The body is gone; drawBurningCars shows the WCAR fire in its place.
+        return;
+    }
     drawWorldSprite(renderer, assets_.carSpriteTexture(spriteIndex_),
                     vehicle_.position(), vehicle_.yaw(),
                     vehicle_.spriteWidth(), vehicle_.spriteHeight(), 0.03f);
@@ -3984,6 +4012,7 @@ void Game::carjackNearest(AudioManager& audio) {
     carHealth_ = std::max(25.0f, car.health);
     carHealthMax_ = 100.0f;
     carSmokeTimer_ = 0.0f;
+    carIsWrecked_ = false;
     lastCarSpeed_ = 0.0f;
     footPos_ = car.pos;
     inCar_ = true;
@@ -4165,28 +4194,9 @@ void Game::spawnSparks(const Vec3& pos) {
 void Game::explodeAt(const Vec3& pos, float radius, int damage,
                      AudioManager& audio, bool fromPlayer) {
     audio.playSfx(49, 0.85f);
-    std::uniform_real_distribution<float> angle(0.0f, 2.0f * kPi);
-    std::uniform_real_distribution<float> spread(0.0f, 1.0f);
-    for (int i = 0; i < 30; ++i) {
-        const float a = angle(rng_);
-        const float horizontal = spread(rng_) * radius * 0.9f;
-        const float upward = 0.5f + spread(rng_) * 2.4f;
-        spawnParticle(Vec3{pos.x, pos.y + 0.25f, pos.z},
-                      Vec3{std::cos(a) * horizontal, upward,
-                           std::sin(a) * horizontal},
-                      0.5f + spread(rng_) * 0.7f, 0.18f + spread(rng_) * 0.22f,
-                      1.0f, 0.35f + spread(rng_) * 0.45f, 0.06f, 4.0f, 0.30f,
-                      true);
-    }
-    for (int i = 0; i < 14; ++i) {
-        const float a = angle(rng_);
-        spawnParticle(Vec3{pos.x, pos.y + 0.4f, pos.z},
-                      Vec3{std::cos(a) * spread(rng_) * radius,
-                           0.8f + spread(rng_) * 3.0f,
-                           std::sin(a) * spread(rng_) * radius},
-                      1.0f + spread(rng_) * 1.2f, 0.24f + spread(rng_) * 0.2f,
-                      0.22f, 0.22f, 0.22f, 3.0f, 0.45f, false);
-    }
+    // The original detonation visual is the 48-frame EX sprite group played
+    // as a flat 2x2 ground burst (no particle system involved).
+    spawnExplosion(pos);
 
     auto within = [&](const Vec3& other) {
         const float dx = other.x - pos.x;
@@ -4251,6 +4261,10 @@ void Game::damageCar(float amount, AudioManager& audio) {
     if (carHealth_ <= 0.0f) {
         const Vec3 pos = vehicle_.position();
         explodeAt(pos, 3.6f, 70, audio, false);
+        // The wreck keeps burning in place (original WCAR fire loop); the
+        // car body itself is no longer drawn.
+        carIsWrecked_ = true;
+        spawnBurningCar(pos, 24.0f);
         if (inCar_) {
             inCar_ = false;
             footPos_ = pos;
@@ -4296,6 +4310,7 @@ void Game::damageTrafficCar(int index, int amount, AudioManager& audio) {
         car.respawnTimer = 10.0f;
         car.health = 0.0f;
         explodeAt(car.pos, 3.0f, 55, audio, true);
+        spawnBurningCar(car.pos, 20.0f);
         applyWanted(1, "CAR DESTROYED");
     }
 }
@@ -4310,6 +4325,7 @@ void Game::damagePoliceCar(int index, float amount, AudioManager& audio) {
     if (car.health <= 0.0f) {
         car.active = false;
         explodeAt(car.pos, 3.4f, 70, audio, true);
+        spawnBurningCar(car.pos, 20.0f);
         applyWanted(2, "POLICE CAR DESTROYED");
     }
 }
@@ -4735,6 +4751,130 @@ void Game::updateParticles(float dt) {
         } else {
             ++i;
         }
+    }
+}
+
+void Game::spawnExplosion(const Vec3& pos) {
+    if (explosions_.size() >= static_cast<size_t>(kMaxExplosions))
+        explosions_.erase(explosions_.begin());
+    explosions_.push_back(Explosion{pos, 0.0f});
+}
+
+void Game::spawnBurningCar(const Vec3& pos, float life) {
+    if (burningCars_.size() >= static_cast<size_t>(kMaxBurningCars))
+        burningCars_.erase(burningCars_.begin());
+    burningCars_.push_back(BurningCar{pos, 0.0f, life});
+}
+
+void Game::updateExplosions(float dt) {
+    const float duration = kExplosionAdvance / kFireFrameRate;
+    for (size_t i = 0; i < explosions_.size();) {
+        explosions_[i].t += dt;
+        if (explosions_[i].t >= duration) {
+            explosions_.erase(explosions_.begin() +
+                              static_cast<std::ptrdiff_t>(i));
+        } else {
+            ++i;
+        }
+    }
+}
+
+void Game::updateBurningCars(float dt) {
+    for (size_t i = 0; i < burningCars_.size();) {
+        BurningCar& car = burningCars_[i];
+        car.t += dt;
+        car.life -= dt;
+        if (car.life <= 0.0f) {
+            burningCars_.erase(burningCars_.begin() +
+                               static_cast<std::ptrdiff_t>(i));
+        } else {
+            ++i;
+        }
+    }
+}
+
+// A ground-aligned quad (y = cy) spanning [x0..x1] x [z0..z1], image top
+// toward -z (north), drawn with the alpha-tested world-sprite shader so the
+// sprite's transparent gaps show the road through them.
+void Game::drawFlatQuad(Renderer& renderer, GLuint texture, float cy,
+                        float x0, float z0, float x1, float z1, float r,
+                        float g, float b, float a) {
+    if (!texture) return;
+    CityVertex v[6];
+    auto put = [&](int i, float x, float z, float u, float vv) {
+        v[i] = makeVertex(Vec3{x, cy, z}, u, vv, r, g, b, a);
+    };
+    put(0, x0, z0, 0.0f, 0.0f); // north-west (image top-left)
+    put(1, x1, z0, 1.0f, 0.0f); // north-east (image top-right)
+    put(2, x1, z1, 1.0f, 1.0f); // south-east (image bottom-right)
+    put(3, x0, z0, 0.0f, 0.0f);
+    put(4, x1, z1, 1.0f, 1.0f);
+    put(5, x0, z1, 0.0f, 1.0f);
+
+    Shader& shader = renderer.spriteShader();
+    shader.use();
+    shader.setMat4("uMVP", camera_.viewProjection());
+    shader.setInt("uTexture", 0);
+    shader.setInt("uAlphaTest", 1);
+    shader.setInt("uMask", 0);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glEnable(GL_BLEND);
+    glDepthMask(GL_FALSE);
+    glBindVertexArray(quadVao_);
+    glBindBuffer(GL_ARRAY_BUFFER, quadVbo_);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(v), v, GL_STREAM_DRAW);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glBindVertexArray(0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glDepthMask(GL_TRUE);
+}
+
+void Game::drawExplosions(Renderer& renderer) {
+    if (explosions_.empty()) return;
+    const int base = assets_.gry().explosionSpriteBase();
+    const auto& sprites = assets_.gry().sprites;
+    for (const Explosion& explosion : explosions_) {
+        const int frame =
+            std::min<int>(static_cast<int>(explosion.t * kFireFrameRate),
+                          kExplosionAdvance - 1);
+        // Four quadrants, each a 64x64 sprite scaled to one world unit, laid
+        // out in a 2x2 grid centred on the blast (OpenGTA drawExplosion).
+        const float surfaceY = 0.03f + explosion.pos.y;
+        const int offsets[4] = {0, 12, 24, 36};
+        for (int q = 0; q < 4; ++q) {
+            const int idx = base + ((frame + offsets[q]) % kExplosionGroup);
+            if (idx <= 0 || idx >= static_cast<int>(sprites.size()) ||
+                sprites[idx].w <= 0)
+                continue;
+            const float w = sprites[idx].w / 64.0f;
+            const float d = sprites[idx].h / 64.0f;
+            const bool west = (q & 1) == 0;
+            const bool north = (q & 2) == 0;
+            const float xA = west ? explosion.pos.x - 1.0f : explosion.pos.x;
+            const float zA = north ? explosion.pos.z - 1.0f : explosion.pos.z;
+            drawFlatQuad(renderer, assets_.spriteTexture(idx), surfaceY, xA,
+                         zA, xA + w, zA + d, 1.0f, 1.0f, 1.0f, 1.0f);
+        }
+    }
+}
+
+void Game::drawBurningCars(Renderer& renderer) {
+    if (burningCars_.empty()) return;
+    const int base = assets_.gry().wcarSpriteBase();
+    const auto& sprites = assets_.gry().sprites;
+    for (const BurningCar& car : burningCars_) {
+        const int idx =
+            base + static_cast<int>(car.t * kFireFrameRate) % kFireFrames;
+        if (idx <= 0 || idx >= static_cast<int>(sprites.size()) ||
+            sprites[idx].w <= 0)
+            continue;
+        const float w = sprites[idx].w / 64.0f;
+        const float h = sprites[idx].h / 64.0f;
+        // Anchor the fire's base to the wreck's ground line.
+        drawWorldSprite(renderer, assets_.spriteTexture(idx),
+                        Vec3{car.pos.x, car.pos.y + h * 0.5f, car.pos.z},
+                        0.0f, w, h, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f);
     }
 }
 
@@ -5233,6 +5373,8 @@ void Game::updateCombat(float dt, InputManager& input, AudioManager& audio) {
 
     updateProjectiles(dt, audio);
     updateParticles(dt);
+    updateExplosions(dt);
+    updateBurningCars(dt);
     updateWeaponPickups(dt, audio);
     updatePolice(dt, audio);
 

@@ -185,6 +185,22 @@ private:
         float t = 0.0f;
     };
 
+    // One detonation, played with the original 48-frame explosion group
+    // (EX, 64x64).  The engine overlays four frames 12 apart in a flat
+    // 2x2 grid on the ground, advancing all of them at 7 fps.
+    struct Explosion {
+        Vec3 pos{};
+        float t = 0.0f;
+    };
+
+    // A wreck that keeps burning: drawn with the original 7-frame WCAR
+    // fire loop (billboarded, base frame = floor(t * 7) % 7).
+    struct BurningCar {
+        Vec3 pos{};
+        float t = 0.0f;      // age, for the frame clock
+        float life = 20.0f;  // seconds until the fire dies down
+    };
+
     struct Projectile {
         Vec3 pos{};
         Vec3 velocity{};
@@ -301,6 +317,17 @@ private:
     // animated spurt at the kill location.
     void addKillEffects(const Vec3& pos);
     void updateBlood(float dt);
+    // Fire and explosions from the GRY sprite groups (WCAR fire loop and the
+    // 48-frame EX ground burst).
+    void spawnExplosion(const Vec3& pos);
+    void spawnBurningCar(const Vec3& pos, float life);
+    void updateExplosions(float dt);
+    void updateBurningCars(float dt);
+    void drawExplosions(Renderer& renderer);
+    void drawBurningCars(Renderer& renderer);
+    void drawFlatQuad(Renderer& renderer, GLuint texture, float cy, float x0,
+                      float z0, float x1, float z1, float r, float g, float b,
+                      float a);
     void spawnSparks(const Vec3& pos);
     void explodeAt(const Vec3& pos, float radius, int damage,
                    AudioManager& audio, bool fromPlayer);
@@ -532,6 +559,8 @@ private:
     std::vector<WorldProp> props_;
     std::vector<Projectile> projectiles_;
     std::vector<Particle> particles_;
+    std::vector<Explosion> explosions_;
+    std::vector<BurningCar> burningCars_;
     std::vector<WeaponPickup> weaponPickups_;
     std::vector<PoliceCar> policeCars_;
     std::vector<Cop> cops_;
@@ -549,6 +578,10 @@ private:
     float carHealthMax_ = 100.0f;
     float carSmokeTimer_ = 0.0f;
     float lastCarSpeed_ = 0.0f;
+    // The player's car is destroyed: once it explodes it is left burning in
+    // place (WCAR fire) and the player is on foot.  Cleared when a fresh car
+    // is obtained (respawn / new city / carjack).
+    bool carIsWrecked_ = false;
     int wantedLevel_ = 0;
     float wantedDecay_ = 0.0f;
     float wantedFlash_ = 0.0f;

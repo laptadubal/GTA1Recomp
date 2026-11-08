@@ -261,6 +261,23 @@ struct GryFile {
         for (int i = 0; i < 6; ++i) base += spriteNumbers[i];
         return base + objectsInfo[static_cast<size_t>(objectType)].sprNum;
     }
+
+    // First sprite index of a group.  The GRY tail stores the sprite count
+    // of every group, laid out in the original SpriteTypes order
+    // (ARROW=0, DIGIT=1, BOAT=2, BOX=3, BUS=4, CAR=5, OBJECT=6, PED=7,
+    //  SPEEDO=8, TANK=9, TRAFFIC_LIGHT=10, TRAIN=11, TRDOOR=12, BIKE=13,
+    //  TRAM=14, WBUS=15, WCAR=16, EX=17, TUMCAR=18, TUMTRUCK=19, FERRY=20);
+    // the group's index is the sum of the earlier groups' counts.  Group
+    // sizes differ between cities (e.g. MIAMI has extra TRAM/bike sprites),
+    // so absolute indexes like "954 = fire" must not be hardcoded.
+    int spriteGroupBase(int type) const {
+        int base = 0;
+        for (int i = 0; i < type && i < 21; ++i)
+            base += spriteNumbers[static_cast<size_t>(i)];
+        return base;
+    }
+    int wcarSpriteBase() const { return spriteGroupBase(16); } // 7 fire frames
+    int explosionSpriteBase() const { return spriteGroupBase(17); } // 48
 };
 
 bool loadGry(const std::string& path, GryFile& out, std::string& error);
