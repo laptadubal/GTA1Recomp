@@ -165,6 +165,24 @@ private:
         float animTime = 0.0f;
         // GRY clothing remap table (131..187) — the pedestrian's colour.
         int remap = 0;
+        // Lying corpse sprite (PED group, offset +30); -1 until killed.
+        int corpseFrame = -1;
+    };
+
+    // Persistent ground blood pool from a kill: one of the five dark-navy
+    // pool sprites (PED group offsets +240..+244) with a random rotation.
+    struct BloodStain {
+        Vec3 pos{};
+        float yaw = 0.0f;
+        int variant = 0;
+    };
+
+    // Short animated red spurt (PED group offsets +245..+252, 8 frames)
+    // played at the moment of a kill.
+    struct DeathSpatter {
+        Vec3 pos{};
+        float yaw = 0.0f;
+        float t = 0.0f;
     };
 
     struct Projectile {
@@ -256,6 +274,7 @@ private:
     void spawnPeds();
     void updatePeds(float dt);
     void drawPeds(Renderer& renderer);
+    void drawBloodStains(Renderer& renderer);
     void spawnProps();
     void drawProps(Renderer& renderer);
     int randomCarSprite();
@@ -278,6 +297,10 @@ private:
                        float size, float r, float g, float b, float gravity = 0.0f,
                        float grow = 0.0f, bool additive = false);
     void spawnBlood(const Vec3& pos, int amount);
+    // Original-sprite death effects: a persistent ground pool plus a short
+    // animated spurt at the kill location.
+    void addKillEffects(const Vec3& pos);
+    void updateBlood(float dt);
     void spawnSparks(const Vec3& pos);
     void explodeAt(const Vec3& pos, float radius, int damage,
                    AudioManager& audio, bool fromPlayer);
@@ -504,6 +527,8 @@ private:
 
     std::vector<TrafficCar> traffic_;
     std::vector<Pedestrian> pedestrians_;
+    std::vector<BloodStain> bloodStains_;
+    std::vector<DeathSpatter> deathSpatters_;
     std::vector<WorldProp> props_;
     std::vector<Projectile> projectiles_;
     std::vector<Particle> particles_;

@@ -30,6 +30,16 @@ constexpr int kPedRemapLast = 187;
 // yellow, blue, orange, grey).
 constexpr int kCharacterRemaps[8] = {131, 136, 140, 139, 165, 156, 143, 133};
 
+// Death-effect sprites live in a fixed band of the PED group (same relative
+// offsets in all three cities, verified).  Corpse = lying flat poses at
+// +29..+31; the red blood spurt animates over +245..+252 (8 frames); a
+// persistent ground stain reuses five of those spurt frames (blood is the
+// red spurt, not the navy decals at +240..+244).
+constexpr int kCorpseFirst = 29;   // 3 candidates
+constexpr int kSpurtFirst = 245;   // 8 frames
+constexpr int kBloodPoolFrames[5] = {245, 247, 248, 250, 252};
+constexpr int kDeadCopOffset = 237; // fallen cop with blood (copBase+46)
+
 CityVertex makeVertex(const Vec3& p, float u, float v, float r, float g, float b,
                       float a) {
     CityVertex vertex{};
@@ -1475,6 +1485,24 @@ void Game::updateMission(float dt, InputManager& input, AudioManager& audio) {
                     missionPed_.active = false;
                     missionFlash_ = 0.5f;
                     spawnBlood(missionPed_.pos, 14);
+                    addKillEffects(missionPed_.pos);
+                    // Leave the body behind: a dead pedestrian with the
+                    // target's look and the lying corpse pose.
+                    Pedestrian corpse;
+                    corpse.pos = missionPed_.pos;
+                    corpse.cellX = static_cast<int>(missionPed_.pos.x);
+                    corpse.cellY = static_cast<int>(missionPed_.pos.z);
+                    corpse.yaw = missionPed_.yaw;
+                    corpse.spriteIndex = missionPed_.spriteIndex;
+                    corpse.baseFrame = missionPed_.spriteIndex;
+                    std::uniform_int_distribution<int> body(0, 2);
+                    corpse.corpseFrame = pedBaseIndex() + kCorpseFirst + body(rng_);
+                    corpse.remap = missionPed_.remap;
+                    corpse.width = missionPed_.width;
+                    corpse.height = missionPed_.height;
+                    corpse.dead = true;
+                    corpse.deadTimer = 9.0f;
+                    pedestrians_.push_back(std::move(corpse));
                     completeMission(true, audio);
                 }
             }
@@ -2404,6 +2432,7 @@ void Game::updatePlaying(float dt, InputManager& input, AudioManager& audio) {
         deathFade_ = std::min(1.0f, deathFade_ + dt * 1.6f);
         hurtFlash_ = std::max(0.0f, hurtFlash_ - dt);
         updateParticles(dt);
+        updateBlood(dt);
         if (wastedTimer_ <= 0.0f) {
             respawnPlayer(audio);
         }
@@ -2415,6 +2444,7 @@ void Game::updatePlaying(float dt, InputManager& input, AudioManager& audio) {
         bustedTimer_ -= dt;
         deathFade_ = std::min(1.0f, deathFade_ + dt * 1.6f);
         updateParticles(dt);
+        updateBlood(dt);
         if (bustedTimer_ <= 0.0f) {
             respawnPlayer(audio);
         }
@@ -2640,6 +2670,7 @@ void Game::updatePlaying(float dt, InputManager& input, AudioManager& audio) {
         }
         updateTraffic(dt);
         updatePeds(dt);
+        updateBlood(dt);
     }
 
     updateMissionEntities(dt);
@@ -2905,6 +2936,7 @@ void Game::renderWorldScene(Renderer& renderer, bool withCar, bool withPickups) 
     if (withCar) {
         drawProps(renderer);
         drawPeds(renderer);
+        drawBloodStains(renderer);
         drawTraffic(renderer);
         drawPolice(renderer);
         drawCops(renderer);
@@ -3601,6 +3633,8 @@ void Game::drawTraffic(Renderer& renderer) {
 
 void Game::spawnPeds() {
     pedestrians_.clear();
+    bloodStains_.clear();
+    deathSpatters_.clear();
     const Vec3 player = playerPosition();
     std::uniform_int_distribution<int> coordinate(0, CityMap::kSize - 1);
     static const int dirs[4][2] = {{0, -1}, {1, 0}, {0, 1}, {-1, 0}};
@@ -3858,23 +3892,61 @@ void Game::drawProps(Renderer& renderer) {
 void Game::drawPeds(Renderer& renderer) {
     const auto& sprites = assets_.gry().sprites;
     for (const Pedestrian& ped : pedestrians_) {
-        const int frame =
-            ped.baseFrame + static_cast<int>(std::fmodf(ped.animTime, 8.0f));
-        if (frame < 0 || frame >= static_cast<int>(sprites.size()) ||
-            sprites[frame].w <= 0 || sprites[frame].h <= 0) {
+        const int frame = ped.dead
+            ? (ped.corpseFrame >= 0 ? ped.corpseFrame : ped.baseFrame)
+            : ped.baseFrame +
+                  static_cast<int>(std::fmodf(ped.animTime, 8.0f));
+        if (frame < 0 || frame >= static_cast<int>(sprites.size())) {
             continue;
         }
+        const int w = sprites[static_cast<size_t>(frame)].w;
+        const int h = sprites[static_cast<size_t>(frame)].h;
+        if (w <= 0 || h <= 0) continue;
         if (ped.dead) {
+            // Lying corpse: flat on the ground, recoloured with the victim's
+            // clothing remap, oriented along the heading they had.
             drawWorldSprite(renderer, assets_.spriteTexture(frame, ped.remap),
-                            ped.pos, ped.yaw + kPi * 0.5f, ped.width,
-                            ped.height * 0.55f, 0.012f, 0.55f, 0.16f, 0.16f,
-                            1.0f);
+                            ped.pos, ped.yaw, w / 64.0f * 1.35f, h / 64.0f *
+                                           1.35f, 0.012f, 0.88f, 0.88f,
+                            0.88f, 1.0f);
             continue;
         }
         const float tint = ped.panicTimer > 0.0f ? 1.0f : 0.92f;
         drawWorldSprite(renderer, assets_.spriteTexture(frame, ped.remap),
                         ped.pos, ped.yaw, ped.width, ped.height, 0.015f, tint,
                         tint, tint * 0.95f, 1.0f);
+    }
+}
+
+void Game::drawBloodStains(Renderer& renderer) {
+    const int pedBase = pedBaseIndex();
+    const auto& sprites = assets_.gry().sprites;
+    // Persistent ground stains first; they sit just above the road surface.
+    for (const BloodStain& stain : bloodStains_) {
+        const int frame =
+            pedBase +
+            kBloodPoolFrames[static_cast<size_t>(
+                    stain.variant < 5 ? stain.variant : 0)];
+        if (frame < 0 || frame >= static_cast<int>(sprites.size())) continue;
+        const int w = sprites[static_cast<size_t>(frame)].w;
+        const int h = sprites[static_cast<size_t>(frame)].h;
+        if (w <= 0 || h <= 0) continue;
+        drawWorldSprite(renderer, assets_.spriteTexture(frame), stain.pos,
+                        stain.yaw, w / 64.0f * 1.25f, h / 64.0f * 1.25f,
+                        0.006f, 1.0f, 1.0f, 1.0f, 1.0f);
+    }
+    // The short animated spurt at the moment of a kill.
+    for (const DeathSpatter& spatter : deathSpatters_) {
+        const int step =
+            static_cast<int>(spatter.t / 0.06f);
+        const int frame = pedBase + kSpurtFirst + (step < 8 ? step : 7);
+        if (frame < 0 || frame >= static_cast<int>(sprites.size())) continue;
+        const int w = sprites[static_cast<size_t>(frame)].w;
+        const int h = sprites[static_cast<size_t>(frame)].h;
+        if (w <= 0 || h <= 0) continue;
+        drawWorldSprite(renderer, assets_.spriteTexture(frame), spatter.pos,
+                        spatter.yaw, w / 64.0f * 1.15f, h / 64.0f * 1.15f,
+                        0.03f, 1.0f, 1.0f, 1.0f, 1.0f);
     }
 }
 
@@ -4033,6 +4105,50 @@ void Game::spawnBlood(const Vec3& pos, int amount) {
     }
 }
 
+void Game::addKillEffects(const Vec3& pos) {
+    // Ground stain: one of five red blood spurt frames from the PED group,
+    // offset a little and rotated so repeated kills do not line up.
+    const int pedBase = pedBaseIndex();
+    const auto& sprites = assets_.gry().sprites;
+    std::uniform_int_distribution<int> variant(0, 4);
+    std::uniform_real_distribution<float> angle(0.0f, 2.0f * kPi);
+    std::uniform_real_distribution<float> offset(0.05f, 0.28f);
+    const int v = variant(rng_);
+    const int frame = pedBase + kBloodPoolFrames[static_cast<size_t>(v)];
+    if (frame < 0 || frame >= static_cast<int>(sprites.size()) ||
+        sprites[static_cast<size_t>(frame)].w <= 0) {
+        return;
+    }
+    const float a = angle(rng_);
+    const float d = offset(rng_);
+    bloodStains_.push_back(
+        {Vec3{pos.x + std::cos(a) * d, pos.y, pos.z + std::sin(a) * d},
+         angle(rng_), v});
+    if (bloodStains_.size() > 64) {
+        bloodStains_.erase(
+            bloodStains_.begin(), bloodStains_.begin() +
+                                      static_cast<std::ptrdiff_t>(
+                                          bloodStains_.size() - 64));
+    }
+    // Animated spurt at the kill location.
+    deathSpatters_.push_back({Vec3{pos.x, pos.y, pos.z}, angle(rng_), 0.0f});
+    if (deathSpatters_.size() > 16) {
+        deathSpatters_.erase(deathSpatters_.begin());
+    }
+}
+
+void Game::updateBlood(float dt) {
+    for (size_t i = 0; i < deathSpatters_.size();) {
+        deathSpatters_[i].t += dt;
+        if (deathSpatters_[i].t >= 0.48f) {
+            deathSpatters_.erase(deathSpatters_.begin() +
+                                 static_cast<std::ptrdiff_t>(i));
+        } else {
+            ++i;
+        }
+    }
+}
+
 void Game::spawnSparks(const Vec3& pos) {
     std::uniform_real_distribution<float> angle(0.0f, 2.0f * kPi);
     std::uniform_real_distribution<float> speed(1.0f, 4.5f);
@@ -4157,8 +4273,13 @@ void Game::damagePedestrian(int index, int amount, AudioManager& audio) {
         ped.dead = true;
         ped.deadTimer = 9.0f;
         ped.health = 0.0f;
+        // Lying corpse from the PED-group gap sprites; the victim's clothing
+        // remap is kept on the corpse.
+        std::uniform_int_distribution<int> body(0, 2);
+        ped.corpseFrame = pedBaseIndex() + kCorpseFirst + body(rng_);
         score_ += 25;
         spawnBlood(ped.pos, 16);
+        addKillEffects(ped.pos);
         audio.playSfx(37, 0.55f);
     }
 }
@@ -4205,6 +4326,7 @@ void Game::damageCop(int index, int amount, AudioManager& audio) {
         cop.deadTimer = 12.0f;
         cop.health = 0.0f;
         spawnBlood(cop.pos, 14);
+        addKillEffects(cop.pos);
         score_ += 100;
         applyWanted(2, "POLICE OFFICER DOWN");
     }
@@ -5270,19 +5392,21 @@ void Game::drawCops(Renderer& renderer) {
     for (const Cop& cop : cops_) {
         if (!cop.active) continue;
         const auto& sprites = assets_.gry().sprites;
-        if (cop.spriteIndex < 0 ||
-            cop.spriteIndex >= static_cast<int>(sprites.size()))
-            continue;
+        int frame = cop.spriteIndex;
         float r = 1.0f, g = 1.0f, b = 1.0f;
+        float lift = 0.025f;
         if (cop.dead) {
-            r = 0.55f;
-            g = 0.18f;
-            b = 0.18f;
+            // Fallen cop with blood (PED group offset +237); it carries the
+            // blood in its own palette, so no red tint is needed.
+            frame = pedBaseIndex() + kDeadCopOffset;
+            lift = 0.012f;
+            g *= 0.92f;
+            b *= 0.92f;
         }
-        drawWorldSprite(renderer, assets_.spriteTexture(cop.spriteIndex), cop.pos,
-                        cop.yaw, sprites[cop.spriteIndex].w / 64.0f * 1.35f,
-                        sprites[cop.spriteIndex].h / 64.0f * 1.35f, 0.025f, r,
-                        g, b, 1.0f);
+        if (frame < 0 || frame >= static_cast<int>(sprites.size())) continue;
+        drawWorldSprite(renderer, assets_.spriteTexture(frame), cop.pos, cop.yaw,
+                        sprites[frame].w / 64.0f * 1.35f,
+                        sprites[frame].h / 64.0f * 1.35f, lift, r, g, b, 1.0f);
     }
 }
 
