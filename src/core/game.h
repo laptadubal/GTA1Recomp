@@ -133,6 +133,8 @@ private:
         float health = 100.0f;
         bool dead = false;
         float respawnTimer = 0.0f;
+        // Seconds until this car may hurt something again after a collision.
+        float hitCooldown = 0.0f;
     };
 
     struct WorldProp {
@@ -285,6 +287,8 @@ private:
     bool nearVehicle() const;
     void spawnPickups();
     void spawnTraffic();
+    // Collides ambient traffic with the player, pedestrians and police.
+    void resolveTrafficCollisions(float dt, AudioManager& audio);
     void updateTraffic(float dt);
     void drawTraffic(Renderer& renderer);
     void spawnPeds();
@@ -334,8 +338,14 @@ private:
     void damagePlayer(int amount, AudioManager& audio);
     void damageCar(float amount, AudioManager& audio);
     void damagePedestrian(int index, int amount, AudioManager& audio);
-    void damageTrafficCar(int index, int amount, AudioManager& audio);
-    void damagePoliceCar(int index, float amount, AudioManager& audio);
+    // Kill a pedestrian struck by a random traffic car: same death
+    // bookkeeping as damagePedestrian, but no score and no wanted level
+    // (the player was not responsible for the accident).
+    void killPedestrianByCar(int index, AudioManager& audio);
+    void damageTrafficCar(int index, int amount, AudioManager& audio,
+                          bool creditWanted = true);
+    void damagePoliceCar(int index, float amount, AudioManager& audio,
+                         bool creditWanted = true);
     void damageCop(int index, int amount, AudioManager& audio);
     void applyWanted(int stars, const std::string& reason);
     void clearPolice();

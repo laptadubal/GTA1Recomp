@@ -91,10 +91,11 @@ std::string cityDisplayName(const std::string& city) {
 
 Vec3 trafficLanePosition(int cellX, int cellY, int rawHeight, int dirX,
                          int dirY, const World& world) {
-    // GTA's cities use right-hand traffic. Keep ambient cars slightly to the
-    // right of the road-cell centre; changing direction at a junction then
-    // moves the next target onto the new lane and naturally rounds the turn.
-    constexpr float kLaneOffset = 0.18f;
+    // GTA's cities use right-hand traffic. Keep ambient cars on the right
+    // half of the road (a lane, not the centre line); changing direction at
+    // a junction then moves the next target onto the new lane and naturally
+    // rounds the turn.
+    constexpr float kLaneOffset = 0.25f;
     const int surface = world.trafficSurfaceAt(cellX, cellY, rawHeight);
     return Vec3{cellX + 0.5f - static_cast<float>(dirY) * kLaneOffset,
                 static_cast<float>(surface),
@@ -2691,6 +2692,7 @@ void Game::updatePlaying(float dt, InputManager& input, AudioManager& audio) {
             updateOnFoot(dt, input, audio);
         }
         updateTraffic(dt);
+        resolveTrafficCollisions(dt, audio);
         updatePeds(dt);
         updateBlood(dt);
     }
@@ -3380,8 +3382,8 @@ void Game::spawnTraffic() {
     static const int dirs[4][2] = {{0, -1}, {1, 0}, {0, 1}, {-1, 0}};
 
     // Keep a lively crowd of cars around the player, as in the original.
-    for (int attempt = 0; attempt < 40000 &&
-                            traffic_.size() < 30; ++attempt) {
+    for (int attempt = 0; attempt < 60000 &&
+                            traffic_.size() < 44; ++attempt) {
         const int x = coordinate(rng_);
         const int y = coordinate(rng_);
         const std::vector<TrafficRoadLevel>& roadLevels =
@@ -3645,10 +3647,117 @@ void Game::updateTraffic(float dt) {
         float yawDiff = desiredYaw - car.yaw;
         while (yawDiff > kPi) yawDiff -= 2.0f * kPi;
         while (yawDiff < -kPi) yawDiff += 2.0f * kPi;
-        car.yaw += yawDiff * std::min(1.0f, dt * 12.0f);
+        // Snap onto the heading quickly so the car tracks its lane edge to
+        // edge after a turn instead of drifting sideways through it.
+        car.yaw += yawDiff * std::min(1.0f, dt * 20.0f);
     }
 }
 
+// XZ distance at which a moving car strikes a pedestrian: half the car's
+// width plus the pedestrian's body radius.
+constexpr float kCarPedHit = 0.72f;
+// Seconds after a hit during which the same car cannot hurt again.
+constexpr float kTrafficHitCooldown = 0.55f;
+
+// Ambient traffic collides with the rest of the world (the original stops
+// cars at nothing): it kills the pedestrians it runs into, dents the
+// player's car and police cruisers, and kills the on-foot player outright.
+void Game::resolveTrafficCollisions(float dt, AudioManager& audio) {
+    // The player's own car runs over pedestrians: instant death plus a
+    // wanted level and the kill score, as in the original.
+    if (inCar_ && !carIsWrecked_ && wastedTimer_ <= 0.0f &&
+        bustedTimer_ <= 0.0f && std::abs(vehicle_.speed()) > 2.0f) {
+        const Vec3 pv = vehicle_.position();
+        for (size_t p = 0; p < pedestrians_.size(); ++p) {
+            Pedestrian& ped = pedestrians_[p];
+            if (ped.dead || std::abs(ped.pos.y - pv.y) >= 1.5f) continue;
+            const float dx = ped.pos.x - pv.x;
+            const float dz = ped.pos.z - pv.z;
+            if (dx * dx + dz * dz < kCarPedHit * kCarPedHit) {
+                damagePedestrian(static_cast<int>(p), 100, audio);
+            }
+        }
+    }
+
+    if (traffic_.empty()) return;
+    for (int i = 0; i < static_cast<int>(traffic_.size()); ++i) {
+        TrafficCar& car = traffic_[static_cast<size_t>(i)];
+        if (car.dead) continue;
+        car.hitCooldown = std::max(0.0f, car.hitCooldown - dt);
+        if (wastedTimer_ > 0.0f || bustedTimer_ > 0.0f) continue;
+
+        // The player on foot: being struck is instant death.  The car keeps
+        // rolling on, as in the original.
+        if (!inCar_ && std::abs(footPos_.y - car.pos.y) < 1.5f &&
+            car.hitCooldown <= 0.0f) {
+            const float dx = footPos_.x - car.pos.x;
+            const float dz = footPos_.z - car.pos.z;
+            if (dx * dx + dz * dz < kCarPedHit * kCarPedHit) {
+                audio.playCrashSound();
+                damagePlayer(120, audio);
+                car.hitCooldown = kTrafficHitCooldown;
+                continue;
+            }
+        }
+
+        // The player's car: a mutual fender-bender at both vehicles.
+        if (inCar_ && !carIsWrecked_ && car.hitCooldown <= 0.0f) {
+            const Vec3 pv = vehicle_.position();
+            if (std::abs(pv.y - car.pos.y) < 1.5f) {
+                const float dx = pv.x - car.pos.x;
+                const float dz = pv.z - car.pos.z;
+                const float reach =
+                    0.5f * (car.width + vehicle_.spriteWidth()) + 0.3f;
+                if (dx * dx + dz * dz < reach * reach) {
+                    const float impact = 5.0f + 1.4f * car.speed +
+                                         0.9f * std::abs(vehicle_.speed());
+                    audio.playCrashSound();
+                    damageCar(impact, audio);
+                    damageTrafficCar(i, static_cast<int>(impact), audio, false);
+                    car.hitCooldown = kTrafficHitCooldown;
+                    continue;
+                }
+            }
+        }
+
+        // Citizens on the road: the car kills them and takes a dent.
+        if (car.hitCooldown <= 0.0f) {
+            for (size_t p = 0; p < pedestrians_.size(); ++p) {
+                Pedestrian& ped = pedestrians_[p];
+                if (ped.dead || std::abs(ped.pos.y - car.pos.y) >= 1.5f)
+                    continue;
+                const float dx = ped.pos.x - car.pos.x;
+                const float dz = ped.pos.z - car.pos.z;
+                if (dx * dx + dz * dz < kCarPedHit * kCarPedHit) {
+                    audio.playCrashSound();
+                    killPedestrianByCar(static_cast<int>(p), audio);
+                    damageTrafficCar(i, 12, audio, false);
+                    car.hitCooldown = kTrafficHitCooldown;
+                    break;
+                }
+            }
+        }
+
+        // Police cruisers: an accident, no wanted credit.
+        if (car.hitCooldown <= 0.0f) {
+            for (size_t c = 0; c < policeCars_.size(); ++c) {
+                const PoliceCar& police = policeCars_[c];
+                if (!police.active ||
+                    std::abs(police.pos.y - car.pos.y) >= 1.5f)
+                    continue;
+                const float dx = police.pos.x - car.pos.x;
+                const float dz = police.pos.z - car.pos.z;
+                const float reach = 0.5f * (car.width + 1.0f) + 0.25f;
+                if (dx * dx + dz * dz < reach * reach) {
+                    damagePoliceCar(static_cast<int>(c), 4.0f + car.speed,
+                                    audio, false);
+                    car.hitCooldown = kTrafficHitCooldown;
+                    break;
+                }
+            }
+        }
+    }
+}
 void Game::drawTraffic(Renderer& renderer) {
     for (const TrafficCar& car : traffic_) {
         if (car.dead) continue;
@@ -4298,35 +4407,54 @@ void Game::damagePedestrian(int index, int amount, AudioManager& audio) {
     }
 }
 
-void Game::damageTrafficCar(int index, int amount, AudioManager& audio) {
+// A traffic car runs over a citizen: the same corpse and blood bookkeeping
+// as damagePedestrian, but no score and no wanted level, because the player
+// had nothing to do with the accident.
+void Game::killPedestrianByCar(int index, AudioManager& audio) {
+    if (index < 0 || index >= static_cast<int>(pedestrians_.size())) return;
+    Pedestrian& ped = pedestrians_[static_cast<size_t>(index)];
+    if (ped.dead) return;
+    ped.dead = true;
+    ped.deadTimer = 9.0f;
+    ped.health = 0.0f;
+    std::uniform_int_distribution<int> body(0, 2);
+    ped.corpseFrame = pedBaseIndex() + kCorpseFirst + body(rng_);
+    spawnBlood(ped.pos, 16);
+    addKillEffects(ped.pos);
+    audio.playSfx(37, 0.55f);
+}
+
+void Game::damageTrafficCar(int index, int amount, AudioManager& audio,
+                            bool creditWanted) {
     if (index < 0 || index >= static_cast<int>(traffic_.size())) return;
     TrafficCar& car = traffic_[static_cast<size_t>(index)];
     if (car.dead || amount <= 0) return;
     car.health -= static_cast<float>(amount);
     spawnSparks(car.pos);
-    applyWanted(1, "VEHICULAR DAMAGE");
+    if (creditWanted) applyWanted(1, "VEHICULAR DAMAGE");
     if (car.health <= 0.0f) {
         car.dead = true;
         car.respawnTimer = 10.0f;
         car.health = 0.0f;
         explodeAt(car.pos, 3.0f, 55, audio, true);
         spawnBurningCar(car.pos, 20.0f);
-        applyWanted(1, "CAR DESTROYED");
+        if (creditWanted) applyWanted(1, "CAR DESTROYED");
     }
 }
 
-void Game::damagePoliceCar(int index, float amount, AudioManager& audio) {
+void Game::damagePoliceCar(int index, float amount, AudioManager& audio,
+                           bool creditWanted) {
     if (index < 0 || index >= static_cast<int>(policeCars_.size())) return;
     PoliceCar& car = policeCars_[static_cast<size_t>(index)];
     if (!car.active || amount <= 0.0f) return;
     car.health -= amount;
     spawnSparks(car.pos);
-    applyWanted(2, "POLICE CAR ATTACKED");
+    if (creditWanted) applyWanted(2, "POLICE CAR ATTACKED");
     if (car.health <= 0.0f) {
         car.active = false;
         explodeAt(car.pos, 3.4f, 70, audio, true);
         spawnBurningCar(car.pos, 20.0f);
-        applyWanted(2, "POLICE CAR DESTROYED");
+        if (creditWanted) applyWanted(2, "POLICE CAR DESTROYED");
     }
 }
 
