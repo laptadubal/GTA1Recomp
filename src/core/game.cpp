@@ -257,7 +257,19 @@ bool Game::setupCar(std::string& error) {
     vehicle_.setSprite(sprite, info.w, info.h, car.model);
     carModel_ = car.model;
     carLabel_ = carNameForSprite(sprite);
-    assets_.carSpriteTexture(spriteIndex_);
+    // The starting car wears one of its factory paint slots from the GRY
+    // record (a zero slot keeps the base colour).
+    carRemap_ = 0;
+    if (assets_.gry().remapTables.size() >= 256u) {
+        const int remap =
+            car.remap8[std::uniform_int_distribution<int>(0, 11)(rng_)];
+        if (remap > 0 &&
+            assets_.gry().remapTables.size() >=
+                (static_cast<size_t>(remap) + 1u) * 256u) {
+            carRemap_ = remap;
+        }
+    }
+    assets_.spriteTexture(spriteIndex_, carRemap_);
     return true;
 }
 
@@ -1248,13 +1260,15 @@ void Game::beginMission() {
         setObjective("GO TO THE MARKER" + where);
         break;
     case MissionType::StealDeliver: {
-        const int sprite = randomCarSprite();
+        int carRemap = 0;
+        const int sprite = randomCarSprite(carRemap);
         if (sprite < 0) {
             setObjective("STEAL THE CAR" + where);
             break;
         }
         missionCar_.active = true;
         missionCar_.spriteIndex = sprite;
+        missionCar_.remap = carRemap;
         missionCar_.pos = missionSource_;
         missionCar_.yaw = roadYaw(missionSource_);
         const auto& info = assets_.gry().sprites[sprite];
@@ -1263,18 +1277,20 @@ void Game::beginMission() {
         missionCar_.width = info.w / 64.0f * 1.35f;
         missionCar_.height = info.h / 64.0f * 1.35f;
         missionCar_.health = 120;
-        assets_.spriteTexture(sprite);
+        assets_.spriteTexture(sprite, carRemap);
         setObjective("STEAL THE CAR" + where);
         break;
     }
     case MissionType::DestroyCar: {
-        const int sprite = randomCarSprite();
+        int carRemap = 0;
+        const int sprite = randomCarSprite(carRemap);
         if (sprite < 0) {
             setObjective("DESTROY THE CAR" + where);
             break;
         }
         missionCar_.active = true;
         missionCar_.spriteIndex = sprite;
+        missionCar_.remap = carRemap;
         missionCar_.pos = missionSource_;
         missionCar_.yaw = roadYaw(missionSource_);
         const auto& info = assets_.gry().sprites[sprite];
@@ -1283,7 +1299,7 @@ void Game::beginMission() {
         missionCar_.width = info.w / 64.0f * 1.35f;
         missionCar_.height = info.h / 64.0f * 1.35f;
         missionCar_.health = 120;
-        assets_.spriteTexture(sprite);
+        assets_.spriteTexture(sprite, carRemap);
         setObjective("DESTROY THE CAR" + where);
         break;
     }
@@ -1328,11 +1344,12 @@ void Game::beginMission() {
 void Game::takeMissionCar() {
     if (!missionCar_.active) return;
     spriteIndex_ = missionCar_.spriteIndex;
+    carRemap_ = missionCar_.remap;
     vehicle_.reset(missionCar_.pos);
     vehicle_.setYaw(missionCar_.yaw);
     vehicle_.setSprite(missionCar_.spriteIndex, missionCar_.pixelWidth,
                        missionCar_.pixelHeight, 0);
-    assets_.carSpriteTexture(missionCar_.spriteIndex);
+    assets_.spriteTexture(missionCar_.spriteIndex, carRemap_);
     carLabel_ = carNameForSprite(spriteIndex_);
     footPos_ = missionCar_.pos;
     inCar_ = true;
@@ -3119,20 +3136,32 @@ void Game::drawCar(Renderer& renderer) {
         // The body is gone; drawBurningCars shows the WCAR fire in its place.
         return;
     }
-    drawWorldSprite(renderer, assets_.carSpriteTexture(spriteIndex_),
+    drawWorldSprite(renderer,
+                    assets_.spriteTexture(spriteIndex_, carRemap_),
                     vehicle_.position(), vehicle_.yaw(),
                     vehicle_.spriteWidth(), vehicle_.spriteHeight(), 0.03f);
 }
 
-int Game::randomCarSprite() {
+int Game::randomCarSprite(int& outRemap) {
+    outRemap = 0;
     const auto& cars = assets_.gry().cars;
     if (cars.empty()) return -1;
     std::uniform_int_distribution<int> pick(0, static_cast<int>(cars.size()) - 1);
     for (int attempt = 0; attempt < 16; ++attempt) {
-        const int sprite = assets_.gry().carSpriteIndex(cars[pick(rng_)].sprNum);
+        const GryCarInfo& car = cars[static_cast<size_t>(pick(rng_))];
+        const int sprite = assets_.gry().carSpriteIndex(car.sprNum);
         if (sprite >= 0 &&
             sprite < static_cast<int>(assets_.gry().sprites.size()) &&
             assets_.gry().sprites[sprite].w > 0) {
+            // The GRY car record lists up to twelve factory paint slots;
+            // a zero slot keeps the sprite's base paint.
+            const int remap =
+                car.remap8[std::uniform_int_distribution<int>(0, 11)(rng_)];
+            if (remap > 0 &&
+                assets_.gry().remapTables.size() >=
+                    (static_cast<size_t>(remap) + 1u) * 256u) {
+                outRemap = remap;
+            }
             return sprite;
         }
     }
@@ -3422,12 +3451,13 @@ void Game::spawnTraffic() {
         }
         if (tooClose) continue;
 
-        const int sprite = randomCarSprite();
+        int carRemap = 0;
+        const int sprite = randomCarSprite(carRemap);
         if (sprite < 0) continue;
         const int widthPixels = assets_.gry().sprites[sprite].w;
         const int heightPixels = assets_.gry().sprites[sprite].h;
         if (widthPixels <= 0 || heightPixels <= 0) continue;
-        assets_.spriteTexture(sprite); // upload/cache now
+        assets_.spriteTexture(sprite, carRemap); // upload/cache now
 
         TrafficCar car;
         car.pos = pos;
@@ -3435,6 +3465,7 @@ void Game::spawnTraffic() {
         car.cellY = y;
         car.roadHeight = spawn.rawHeight;
         car.spriteIndex = sprite;
+        car.remap = carRemap;
         car.width = widthPixels / 64.0f;
         car.height = heightPixels / 64.0f;
 
@@ -3506,6 +3537,20 @@ void Game::updateTraffic(float dt) {
             car.health = 100.0f;
             car.dead = false;
             car.respawnTimer = 0.0f;
+            // The street keeps filling with fresh cars, each wearing its
+            // own factory paint.
+            int carRemap = 0;
+            const int sprite = randomCarSprite(carRemap);
+            if (sprite >= 0) {
+                car.spriteIndex = sprite;
+                car.remap = carRemap;
+                const auto& info = assets_.gry().sprites[sprite];
+                if (info.w > 0 && info.h > 0) {
+                    car.width = info.w / 64.0f;
+                    car.height = info.h / 64.0f;
+                    assets_.spriteTexture(sprite, carRemap);
+                }
+            }
             if (chooseDirection(car, true)) return;
         }
     };
@@ -3758,13 +3803,18 @@ void Game::resolveTrafficCollisions(float dt, AudioManager& audio) {
         }
     }
 }
+
 void Game::drawTraffic(Renderer& renderer) {
     for (const TrafficCar& car : traffic_) {
         if (car.dead) continue;
+        // A beaten-up car runs darker; the paint itself comes from the
+        // GRY remap tables.
         const float damage = std::clamp(car.health / 100.0f, 0.0f, 1.0f);
-        drawWorldSprite(renderer, assets_.spriteTexture(car.spriteIndex), car.pos,
-                        car.yaw, car.width, car.height, 0.02f, 0.55f + 0.45f * damage,
-                        0.55f + 0.45f * damage, 0.55f + 0.45f * damage, 1.0f);
+        const float tint = 0.55f + 0.45f * damage;
+        drawWorldSprite(renderer,
+                        assets_.spriteTexture(car.spriteIndex, car.remap),
+                        car.pos, car.yaw, car.width, car.height, 0.02f,
+                        tint, tint, tint, 1.0f);
     }
 }
 
@@ -4112,11 +4162,12 @@ void Game::carjackNearest(AudioManager& audio) {
     traffic_.erase(traffic_.begin() + index);
 
     spriteIndex_ = car.spriteIndex;
+    carRemap_ = car.remap;
     const auto& info = assets_.gry().sprites[car.spriteIndex];
     vehicle_.reset(car.pos);
     vehicle_.setYaw(car.yaw);
     vehicle_.setSprite(car.spriteIndex, info.w, info.h, 0);
-    assets_.carSpriteTexture(car.spriteIndex);
+    assets_.spriteTexture(car.spriteIndex, carRemap_);
     carLabel_ = carNameForSprite(car.spriteIndex);
     carHealth_ = std::max(25.0f, car.health);
     carHealthMax_ = 100.0f;
@@ -5183,7 +5234,8 @@ void Game::updatePolice(float dt, AudioManager& audio) {
                 car.spriteIndex = 48;
                 if (car.spriteIndex >= static_cast<int>(assets_.gry().sprites.size()) ||
                     assets_.gry().sprites[car.spriteIndex].w <= 0) {
-                    car.spriteIndex = randomCarSprite();
+                    int fallbackRemap = 0;
+                    car.spriteIndex = randomCarSprite(fallbackRemap);
                 }
                 if (car.spriteIndex >= 0) {
                     car.yaw = std::atan2(player.x - spawnPos.x,
@@ -5790,8 +5842,9 @@ void Game::drawMissionTargets(Renderer& renderer) {
             b = 0.45f + 0.55f * health;
         }
         drawWorldSprite(renderer,
-                        assets_.spriteTexture(missionCar_.spriteIndex), pos,
-                        missionCar_.yaw, missionCar_.width,
+                        assets_.spriteTexture(missionCar_.spriteIndex,
+                                              missionCar_.remap),
+                        pos, missionCar_.yaw, missionCar_.width,
                         missionCar_.height, 0.03f, r, g, b, 1.0f);
     }
     if (missionPed_.active && missionPed_.alive) {

@@ -86,6 +86,7 @@ private:
         Vec3 pos{};
         float yaw = 0.0f;
         int spriteIndex = 0;
+        int remap = 0; // GRY paint table, 0 = base paint
         int pixelWidth = 48;
         int pixelHeight = 32;
         float width = 0.8f;
@@ -127,6 +128,7 @@ private:
         float yaw = 0.0f;
         float speed = 4.5f;
         int spriteIndex = 0;
+        int remap = 0; // GRY paint table, 0 = base paint
         float width = 1.0f;
         float height = 1.0f;
         float stuck = 0.0f;
@@ -297,7 +299,9 @@ private:
     void drawBloodStains(Renderer& renderer);
     void spawnProps();
     void drawProps(Renderer& renderer);
-    int randomCarSprite();
+    // Picks a random road car and one of its paint slots; outRemap receives
+    // the GRY remap table index (0 keeps the base paint).
+    int randomCarSprite(int& outRemap);
     int randomPedSprite();
     // Discover the 8-frame character walk cycles inside the PED sprite group
     // (data-driven, so all three city GRY files resolve to the right bases).
@@ -546,6 +550,7 @@ private:
     int cameraMode_ = 0;
     int carIndex_ = 0;
     int spriteIndex_ = 0;
+    int carRemap_ = 0; // GRY paint table of the player's car, 0 = base
     int carModel_ = 0;
     std::string carLabel_ = "CAR";
     std::string selectedCity_ = "NYC";
